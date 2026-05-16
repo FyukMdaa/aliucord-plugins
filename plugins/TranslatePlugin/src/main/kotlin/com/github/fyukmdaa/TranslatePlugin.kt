@@ -32,10 +32,14 @@ class TranslatePlugin : Plugin() {
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
     private val autoChannels = mutableSetOf<Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    
+    // 安全なコンテキストを保持しておく
+    private lateinit var safeContext: Context
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
     override fun start(ctx: Context) {
+        safeContext = ctx
         logger.info("TranslatePlugin started")
         
         val buttonId = View.generateViewId()
@@ -68,29 +72,30 @@ class TranslatePlugin : Plugin() {
                         Thread {
                             try {
                                 val content = message.content ?: return@Thread
-                                // Translator内でログを出さないので、ここでログを出す
-                                logger.info("Translating msg ${message.id}...")
+                                // ⚠️ ここでは logger を呼ばない！スレッドセーフではないため
                                 val result = Translator.translate(content, targetLang())
                                 
                                 if (result.isNotBlank()) {
                                     translatedMessages[message.id] = TranslatedEntry(content, result)
+                                    
                                     mainHandler.post {
-                                        showTranslation(menu.requireContext(), content, result)
+                                        // メインスレッドに戻ってからログを出す
+                                        logger.info("Translation success for msg ${message.id}")
+                                        showTranslation(safeContext, content, result)
                                         menu.dismiss()
                                     }
                                 }
                             } catch (e: Exception) {
-                                // 例外メッセージだけを文字列として渡す
-                                val msg = "Err: ${e.javaClass.simpleName}"
-                                logger.error(msg, null)
                                 mainHandler.post { 
-                                    Toast.makeText(menu.requireContext(), msg, Toast.LENGTH_SHORT).show() 
+                                    val msg = "Err: ${e.javaClass.simpleName}: ${e.message}"
+                                    logger.error(msg, null)
+                                    Toast.makeText(safeContext, msg, Toast.LENGTH_SHORT).show() 
                                 }
                             }
                         }.start()
                     } else {
                         entry.showingTranslation = !entry.showingTranslation
-                        showTranslation(menu.requireContext(), entry.original, entry.translated)
+                        showTranslation(safeContext, entry.original, entry.translated)
                         menu.dismiss()
                     }
                 }
@@ -98,10 +103,10 @@ class TranslatePlugin : Plugin() {
                 binding.a.findViewById<TextView>(autoButtonId)?.setOnClickListener {
                     if (message.channelId in autoChannels) {
                         autoChannels.remove(message.channelId)
-                        Toast.makeText(ctx, "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(safeContext, "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
                     } else {
                         autoChannels.add(message.channelId)
-                        Toast.makeText(ctx, "Auto-Translate ON", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(safeContext, "Auto-Translate ON", Toast.LENGTH_SHORT).show()
                     }
                     menu.dismiss()
                 }
