@@ -29,7 +29,7 @@ object Translator {
         if (!response.ok()) {
             val msg = "HTTP " + response.statusCode
             logger.error(msg, null)
-            throw RuntimeException(msg)
+            throw Exception(msg)
         }
         
         // 4. レスポンス取得
@@ -39,7 +39,7 @@ object Translator {
         val parsedJson = JSONArray(body)
         val translatedSections = parsedJson.getJSONArray(0)
         
-        // 6. 翻訳文抽出（while ループで安全に）
+        // 6. 翻訳文抽出（🔧 while ループで安全に）
         val translatedText = buildString {
             var i = 0
             val len = translatedSections.length()
