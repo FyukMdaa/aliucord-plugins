@@ -5,20 +5,24 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.widget.NestedScrollView
-import androidx.recyclerview.widget.RecyclerView
 import com.aliucord.Logger
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
 import com.discord.databinding.WidgetChatListActionsBinding
 import com.discord.models.message.Message
+import com.discord.widgets.chat.list.WidgetChatList
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
+import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage
+import com.discord.widgets.chat.list.entries.MessageEntry
+import com.discord.utilities.view.text.SimpleDraweeSpanTextView
+import com.facebook.drawee.span.DraweeSpanStringBuilder
 import com.lytefast.flexinput.R
+import java.lang.reflect.Field
 
 @AliucordPlugin
 class TranslatePlugin : Plugin() {
@@ -36,7 +40,8 @@ class TranslatePlugin : Plugin() {
     private val autoChannels = mutableSetOf<Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
     
-    private lateinit var safeContext: Context
+    private var chatList: WidgetChatList? = null
+    private lateinit var mDraweeStringBuilderField: Field
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
@@ -50,7 +55,6 @@ class TranslatePlugin : Plugin() {
 
     override fun start(ctx: Context) {
         try {
-            safeContext = ctx
             logger.info("▶️ TranslatePlugin started")
             
             val buttonId = View.generateViewId()
@@ -64,66 +68,51 @@ class TranslatePlugin : Plugin() {
                 return
             }
 
-            // ── 0. 【決定版】メッセージ書き換えパッチ ─────────────────────────────
-            // 【修正】変数のスコープを try の外に出す
-            val itemClassName = "com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage"
-            val messageClass = Class.forName("com.discord.models.message.Message")
-            
+            // ── 0. WidgetChatList の取得 ─────────────────────────────
             try {
-                // onConfigure(Message, Int, Boolean) などのシグネチャに対応
-                // 【修正】 Int::class.java (Integer) を使用して型エラーを回避
+                patcher.patch(WidgetChatList::class.java.getDeclaredConstructor(), Hook {
+                    chatList = it.thisObject as WidgetChatList
+                })
+            } catch (e: Exception) {
+                logger.error("❌ Failed to patch WidgetChatList constructor", e)
+            }
+
+            // ── 1. メッセージ書き換えパッチ (processMessageText) ─────────────────────────────
+            try {
+                mDraweeStringBuilderField = SimpleDraweeSpanTextView::class.java.getDeclaredField("mDraweeStringBuilder").apply { isAccessible = true }
+                
                 patcher.patch(
-                    itemClassName, 
-                    "onConfigure", 
-                    arrayOf<Class<*>>(messageClass, Int::class.java), 
+                    WidgetChatListAdapterItemMessage::class.java,
+                    "processMessageText",
+                    arrayOf(SimpleDraweeSpanTextView::class.java, MessageEntry::class.java),
                     Hook { cf ->
                         try {
-                            val message = cf.args[0] as? Message ?: return@Hook
+                            val messageEntry = cf.args[1] as MessageEntry
+                            val message = messageEntry.message ?: return@Hook
                             val entry = translatedMessages[message.id]
                             
                             if (entry != null && entry.showingTranslation) {
-                                val viewHolder = cf.thisObject
-                                val itemViewField = RecyclerView.ViewHolder::class.java.getDeclaredField("itemView").apply { isAccessible = true }
-                                val itemView = itemViewField.get(viewHolder) as? View ?: return@Hook
-
-                                replaceTextViewText(itemView, entry.original, entry.translated)
+                                val textView = cf.args[0] as SimpleDraweeSpanTextView
+                                val builder = mDraweeStringBuilderField.get(textView) as? DraweeSpanStringBuilder ?: return@Hook
+                                
+                                // 元のテキストを探して置換
+                                val content = builder.toString()
+                                if (content == entry.original) {
+                                    builder.replace(0, builder.length, entry.translated)
+                                    textView.setDraweeSpanStringBuilder(builder)
+                                }
                             }
                         } catch (e: Exception) {
-                            logger.error("Error in message rewrite hook: ${e.message}", null)
+                            logger.error("Error in processMessageText hook", e)
                         }
                     }
                 )
-                logger.info("✅ Message rewrite patch applied (Method: onConfigure)")
+                logger.info("✅ Message rewrite patch applied (processMessageText)")
             } catch (e: Exception) {
-                logger.error("❌ Failed to patch onConfigure (maybe signature changed)", e)
-                // フォールバック: configure(Message) を試す
-                try {
-                    patcher.patch(
-                        itemClassName, 
-                        "configure", 
-                        arrayOf<Class<*>>(messageClass), 
-                        Hook { cf ->
-                            try {
-                                val message = cf.args[0] as? Message ?: return@Hook
-                                val entry = translatedMessages[message.id]
-                                if (entry != null && entry.showingTranslation) {
-                                    val viewHolder = cf.thisObject
-                                    val itemViewField = RecyclerView.ViewHolder::class.java.getDeclaredField("itemView").apply { isAccessible = true }
-                                    val itemView = itemViewField.get(viewHolder) as? View ?: return@Hook
-                                    replaceTextViewText(itemView, entry.original, entry.translated)
-                                }
-                            } catch (e: Exception) {
-                                logger.error("Error in configure hook", null)
-                            }
-                        }
-                    )
-                    logger.info("✅ Message rewrite patch applied (Method: configure)")
-                } catch (e2: Exception) {
-                    logger.error("❌ Failed to patch configure as well", e2)
-                }
+                logger.error("❌ Failed to patch processMessageText", e)
             }
 
-            // ── 1. configureUI Patch (ボタン動作) ───────────────────────────────
+            // ── 2. configureUI Patch (ボタン動作) ───────────────────────────────
             try {
                 val configureMethod = try {
                     messageContextMenu.getDeclaredMethod("configureUI", WidgetChatListActions.Model::class.java)
@@ -146,8 +135,7 @@ class TranslatePlugin : Plugin() {
                         binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
                             val entry = translatedMessages[message.id]
                             if (entry == null) {
-                                val rawContent = message.content
-                                val content = if (rawContent is String) rawContent else rawContent?.toString() ?: return@setOnClickListener
+                                val content = message.content ?: return@setOnClickListener
                                 
                                 if (isBlankSafe(content)) return@setOnClickListener
                                 
@@ -160,20 +148,23 @@ class TranslatePlugin : Plugin() {
                                             translatedMessages[message.id] = TranslatedEntry(content, result)
                                             mainHandler.post {
                                                 logger.info("Translation success for msg ${message.id}")
-                                                Toast.makeText(menu.requireContext(), "Message Translated! (Scroll to see)", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(menu.requireContext(), "Message Translated!", Toast.LENGTH_SHORT).show()
+                                                // メッセージを再描画
+                                                chatList?.rerenderMessage(message.id)
                                                 menu.dismiss()
                                             }
                                         }
                                     } catch (e: Exception) {
                                         mainHandler.post { 
-                                            logger.error("Translation error", null)
+                                            logger.error("Translation error", e)
                                             Toast.makeText(menu.requireContext(), "Translation Failed", Toast.LENGTH_SHORT).show() 
                                         }
                                     }
                                 }.start()
                             } else {
                                 entry.showingTranslation = !entry.showingTranslation
-                                Toast.makeText(menu.requireContext(), if(entry.showingTranslation) "Showing Translation" else "Showing Original", Toast.LENGTH_SHORT).show()
+                                // メッセージを再描画
+                                chatList?.rerenderMessage(message.id)
                                 menu.dismiss()
                             }
                         }
@@ -189,14 +180,14 @@ class TranslatePlugin : Plugin() {
                             menu.dismiss()
                         }
                     } catch (e: Exception) {
-                        logger.error("Error inside configureUI hook", null)
+                        logger.error("Error inside configureUI hook", e)
                     }
                 })
             } catch (e: Exception) {
                 logger.error("Failed to patch configureUI", e)
             }
 
-            // ── 2. onViewCreated Patch (ボタン表示) ─────────────────────────
+            // ── 3. onViewCreated Patch (ボタン表示) ─────────────────────────
             try {
                 patcher.patch(
                     messageContextMenu,
@@ -235,7 +226,7 @@ class TranslatePlugin : Plugin() {
                                 }
                             autoBtn.text = if (channelId in autoChannels) "🌐 Auto-Translate OFF" else "🌐 Auto-Translate ON"
                         } catch (e: Exception) {
-                            logger.error("Error inside onViewCreated hook", null)
+                            logger.error("Error inside onViewCreated hook", e)
                         }
                     }
                 )
@@ -250,23 +241,5 @@ class TranslatePlugin : Plugin() {
 
     override fun stop(ctx: Context) {
         patcher.unpatchAll()
-    }
-
-    // 【改善】原文と一致するTextViewを探して置換する関数
-    private fun replaceTextViewText(view: View, original: String, translated: String) {
-        if (view is TextView) {
-            if (view.text.toString() == original) {
-                view.text = translated
-                return
-            }
-        } else if (view is ViewGroup) {
-            for (i in 0 until view.childCount) {
-                replaceTextViewText(view.getChildAt(i), original, translated)
-            }
-        }
-    }
-
-    private fun showTranslation(ctx: Context, original: String, translated: String) {
-        // 未使用
     }
 }
