@@ -1,4 +1,4 @@
-package com.fyukmdaa.translateplugin
+package com.github.fyukmdaa
 
 import android.content.Context
 import android.os.Bundle

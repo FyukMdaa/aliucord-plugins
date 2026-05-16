@@ -1,4 +1,4 @@
-package com.fyukmdaa.translateplugin
+package com.github.fyukmdaa
 
 import android.annotation.SuppressLint
 import android.view.View
