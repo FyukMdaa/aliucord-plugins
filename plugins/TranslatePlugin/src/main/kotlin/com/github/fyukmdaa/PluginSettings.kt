@@ -17,25 +17,14 @@ class PluginSettings(private val settings: SettingsAPI) : SettingsPage() {
 
         val ctx = view.context
 
-        // 翻訳先言語
+        // 翻訳先言語設定
         val langInput = TextInput(ctx, "Target language code (ex. ja, en, zh-CN)")
         val langEditText = langInput.editText!!.apply {
             maxLines = 1
+            // 保存されている設定があれば読み込み、なければ "ja" をデフォルトにする
             setText(settings.getString("targetLang", "ja"))
         }
         addView(langInput)
-
-        addView(Divider(ctx))
-
-        // 全体翻訳モードのデフォルト
-        val autoSwitch = Switch(ctx).apply {
-            text = "Enable full translation by default"
-            isChecked = settings.getBool("autoTranslate", false)
-            setOnCheckedChangeListener { _, checked ->
-                settings.setBool("autoTranslate", checked)
-            }
-        }
-        addView(autoSwitch)
 
         addView(Divider(ctx))
 
@@ -45,8 +34,11 @@ class PluginSettings(private val settings: SettingsAPI) : SettingsPage() {
             setOnClickListener {
                 val lang = langEditText.text.toString().trim()
                 if (lang.isNotEmpty()) {
+                    // 設定を保存
                     settings.setString("targetLang", lang)
-                    Toast.makeText(ctx, "Saved", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(ctx, "Saved! Target: $lang", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(ctx, "Please enter a language code", Toast.LENGTH_SHORT).show()
                 }
             }
         })
