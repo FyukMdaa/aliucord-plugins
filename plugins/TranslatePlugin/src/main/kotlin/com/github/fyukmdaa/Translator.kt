@@ -2,14 +2,14 @@ package com.github.fyukmdaa
 
 import com.aliucord.Http
 import com.aliucord.Logger
-import org.json.JSONArray
 import java.net.URLEncoder
+import java.util.regex.Pattern
 
 object Translator {
     private val logger = Logger("TranslatePlugin")
 
     fun translate(text: String, targetLang: String): String {
-        // 1. 入力ログ（単純連結）
+        // 1. 入力ログ
         var textPreview = ""
         if (text.length > 50) {
             textPreview = text.substring(0, 50) + "..."
@@ -27,7 +27,7 @@ object Translator {
             throw RuntimeException("URL encode error", e)
         }
         
-        // 3. URL 構築（1 行 1 連結）
+        // 3. URL 構築
         var url = ""
         url = url + "https://translate.googleapis.com/translate_a/single"
         url = url + "?client=gtx"
@@ -66,7 +66,7 @@ object Translator {
                     bodyPreview = full
                 }
             } catch (e: Exception) {
-                // ignore read error
+                // ignore
             }
             var msg = "HTTP " + response.statusCode + ": " + bodyPreview
             logger.error(msg, null)
@@ -90,82 +90,124 @@ object Translator {
         }
         logger.debug("[4/4] Response body: " + bodyPreview)
 
-        // 8. JSON 解析
-        return parseResponseSafe(body)
+        // 8. 正規表現で翻訳テキストを抽出（JSONArray 不使用）
+        return extractTranslationWithRegex(body)
     }
 
-    private fun parseResponseSafe(body: String): String {
-        logger.debug("[PARSE] start. body length: " + body.length)        
-        var json: JSONArray? = null
-        try {
-            json = JSONArray(body)
-            logger.debug("[PARSE] root array length: " + json.length())
-        } catch (e: Exception) {
-            logger.error("[PARSE] JSONArray creation failed: " + e.message, e)
-            throw e
-        }
+    /**
+     * 🔧 Google Translate API レスポンスを正規表現で解析     * JSONArray 等の難読化クラスを一切使用しない安全な実装
+     * 
+     * レスポンス例:
+     * [[["こんにちは","Hello",...],["世界","world",...]],..."en",...]
+     */
+    private fun extractTranslationWithRegex(body: String): String {
+        logger.debug("[REGEX] Parsing response with regex, length: " + body.length)
         
-        if (json == null) {
-            logger.warn("[PARSE] json is null", null)
+        if (body.isEmpty() || body.charAt(0) != '[') {
+            logger.warn("[REGEX] Invalid response format", null)
             return ""
         }
         
-        if (json.length() == 0) {
-            logger.warn("[PARSE] empty root array", null)
-            return ""
-        }
-        
-        var sections: JSONArray? = null
-        try {
-            sections = json.getJSONArray(0)
-            logger.debug("[PARSE] sections length: " + sections.length())
-        } catch (e: Exception) {
-            logger.error("[PARSE] no array at index 0: " + e.message, e)
-            return ""
-        }
-        
-        if (sections == null) {
-            return ""
-        }
+        // 🔧 正規表現パターン: "翻訳結果","元テキスト" のペアを抽出
+        // グループ1: 翻訳文, グループ2: 原文
+        val pattern = Pattern.compile("\"([^\"]*(?:\\\\.[^\"]*)*)\",\"([^\"]*(?:\\\\.[^\"]*)*)\"")
+        val matcher = pattern.matcher(body)
         
         var result = StringBuilder()
-        var idx = 0
-        var len = sections.length()
+        var matchCount = 0
+        val maxMatches = 20  // 無限ループ防止
         
-        logger.debug("[PARSE] looping " + len + " segments")
-        while (idx < len) {
+        logger.debug("[REGEX] Starting regex match loop")
+        
+        // 🔧 伝統的な while-loop + 手動カウント
+        while (matcher.find() && matchCount < maxMatches) {
             try {
-                var segment = sections.optJSONArray(idx)
-                if (segment != null) {
-                    if (segment.length() > 0) {
-                        var part = segment.optString(0)
-                        if (part != null) {
-                            if (part.isNotEmpty()) {
-                                result.append(part)
-                                var partPreview = ""
-                                if (part.length > 30) {
-                                    partPreview = part.substring(0, 30) + "..."                                } else {
-                                    partPreview = part
-                                }
-                                logger.debug("[PARSE] segment " + idx + ": " + partPreview)
-                            }
+                var translated = ""
+                var original = ""
+                
+                // 🔧 group() 呼び出しは個別に
+                try {
+                    translated = matcher.group(1)
+                } catch (e: Exception) {
+                    logger.warn("[REGEX] Failed to get group 1", e)
+                }
+                try {
+                    original = matcher.group(2)
+                } catch (e: Exception) {
+                    logger.warn("[REGEX] Failed to get group 2", e)
+                }
+                
+                // 🔧 原文がリクエストテキストと一致するペアを翻訳文として採用
+                // （Google API は [translated, original, ...] 形式で返す）
+                if (translated != null && translated.isNotEmpty()) {
+                    if (original != null && original.isNotEmpty()) {
+                        // 原文がリクエストの一部と一致すれば、これは翻訳ペア
+                        if (original.length >= 3 && text.contains(original)) {
+                            result.append(translated)
+                            matchCount = matchCount + 1                            logger.debug("[REGEX] Match " + matchCount + ": " + translated.substring(0, kotlin.math.min(30, translated.length)))
                         }
+                    } else {
+                        // 原文がない場合は単純に追加（フォールバック）
+                        result.append(translated)
+                        matchCount = matchCount + 1
                     }
                 }
             } catch (e: Exception) {
-                logger.warn("[PARSE] failed at idx " + idx + ": " + e.message, e)
+                logger.warn("[REGEX] Failed to process match", e)
+                // 1 つのマッチ失敗で全体を失敗させない
             }
-            idx = idx + 1
         }
         
         var finalResult = result.toString()
+        
+        // 🔧 Unicode エスケープ (\uXXXX) をデコード
+        finalResult = decodeUnicodeEscapes(finalResult)
+        
         var resultPreview = ""
         if (finalResult.length > 100) {
             resultPreview = finalResult.substring(0, 100) + "..."
         } else {
             resultPreview = finalResult
         }
-        logger.info("[PARSE] success: " + resultPreview)
+        
+        if (finalResult.isNotEmpty()) {
+            logger.info("[REGEX] Success: " + resultPreview)
+        } else {
+            logger.warn("[REGEX] No translation found", null)
+        }
+        
         return finalResult
+    }
+    
+    /**
+     * 🔧 Unicode エスケープ (\uXXXX) を文字列にデコード
+     */
+    private fun decodeUnicodeEscapes(input: String): String {
+        if (input.indexOf("\\u") < 0) {
+            return input
+        }
+        
+        var result = StringBuilder()
+        var i = 0
+        var len = input.length
+        
+        while (i < len) {
+            if (i + 5 < len && input.charAt(i) == '\\' && input.charAt(i + 1) == 'u') {
+                try {                    var hex = input.substring(i + 2, i + 6)
+                    var codePoint = Integer.parseInt(hex, 16)
+                    result.append(codePoint.toChar())
+                    i = i + 6
+                } catch (e: Exception) {
+                    // 解析失敗時はそのまま追加
+                    result.append(input.charAt(i))
+                    i = i + 1
+                }
+            } else {
+                result.append(input.charAt(i))
+                i = i + 1
+            }
+        }
+        
+        return result.toString()
     }
 }
