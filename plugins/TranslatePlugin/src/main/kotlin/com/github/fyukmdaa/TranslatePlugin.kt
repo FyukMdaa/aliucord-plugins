@@ -10,6 +10,7 @@ import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
+import com.discord.databinding.WidgetChatListActionsBinding
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
 import com.lytefast.flexinput.R
 
@@ -20,12 +21,15 @@ class TranslatePlugin : Plugin() {
         settingsTab = SettingsTab(PluginSettings::class.java).withArgs(settings)
     }
 
+    // messageId -> 翻訳済みデータ
     private data class TranslatedEntry(
         val original: String,
         val translated: String,
         var showingTranslation: Boolean = true
     )
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
+
+    // チャンネルIDごとの全体翻訳ON状態
     private val autoChannels = mutableSetOf<Long>()
 
     private fun targetLang() = settings.getString("targetLang", "ja")
@@ -35,8 +39,10 @@ class TranslatePlugin : Plugin() {
         val autoButtonId = View.generateViewId()
 
         val messageContextMenu = WidgetChatListActions::class.java
+        val getBinding = messageContextMenu
+            .getDeclaredMethod("getBinding")
+            .apply { isAccessible = true }
 
-        // ── onViewCreated に一本化 ────────────────────────────────────
         patcher.patch(
             messageContextMenu,
             "onViewCreated",
@@ -45,24 +51,24 @@ class TranslatePlugin : Plugin() {
                 val menu = cf.thisObject as WidgetChatListActions
                 val linearLayout = (cf.args[0] as NestedScrollView).getChildAt(0) as LinearLayout
                 val ctx2 = linearLayout.context
-
                 val messageId = WidgetChatListActions.`access$getMessageId$p`(menu)
-                val channelId = try {
-                    WidgetChatListActions.`access$getChannelId$p`(menu)
-                } catch (_: Throwable) { 0L }
-
-                // モデルやメッセージコンテントを取得する代替アプローチ
-                // コンテキストメニューのターゲットメッセージを保持するプロパティ経由（型や実装に依存）
-                // もしくは既存の binding から message.content を引く形が取れない場合の安全策
-                val messageModel = try {
-                    val getModelMethod = messageContextMenu.getDeclaredMethod("getModel").apply { isAccessible = true }
-                    getModelMethod.invoke(menu) as? WidgetChatListActions.Model
-                } catch (_: Throwable) { null }
-
-                val content = messageModel?.message?.content ?: ""
-
-                // 翻訳ボタンの追加とリスナー設定
+        
+                // メッセージ本文をリフレクションで取得
+                val messageField = WidgetChatListActions::class.java.declaredFields
+                    .firstOrNull { it.type.simpleName == "Message" }
+                    ?.also { it.isAccessible = true }
+                val message = messageField?.get(menu)
+                val content = message?.javaClass?.getMethod("getContent")?.invoke(message) as? String
+                    ?: run {
+                        // getContent がなければフィールドで探す
+                        message?.javaClass?.declaredFields
+                            ?.firstOrNull { it.type == String::class.java }
+                            ?.also { it.isAccessible = true }
+                            ?.get(message) as? String
+                    } ?: return@Hook
+        
                 val entry = translatedMessages[messageId]
+        
                 linearLayout.addView(TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                     id = buttonId
                     text = when {
@@ -71,43 +77,36 @@ class TranslatePlugin : Plugin() {
                         else -> "Show Translation"
                     }
                     setOnClickListener {
-                        val currentEntry = translatedMessages[messageId]
-                        if (currentEntry == null) {
-                            if (content.isBlank()) return@setOnClickListener
+                        if (entry == null) {
                             Utils.threadPool.execute {
-                                val result = Translator.translate(content, targetLang())
-                                if (result.isBlank()) return@execute
-                                translatedMessages[messageId] = TranslatedEntry(
-                                    original = content,
-                                    translated = result
-                                )
-                                Utils.mainThread.post {
-                                    showTranslation(menu.requireContext(), content, result)
-                                    menu.dismiss()
+                                try {
+                                    val result = Translator.translate(content, targetLang())
+                                    translatedMessages[messageId] = TranslatedEntry(
+                                        original = content,
+                                        translated = result
+                                    )
+                                    Utils.mainThread.post {
+                                        showTranslation(ctx2, content, result)
+                                        menu.dismiss()
+                                    }
+                                } catch (e: Exception) {
+                                    Utils.mainThread.post {
+                                        Utils.showToast("Translate error: ${e.message}")
+                                    }
                                 }
                             }
                         } else {
-                            currentEntry.showingTranslation = !currentEntry.showingTranslation
-                            showTranslation(menu.requireContext(), currentEntry.original, currentEntry.translated)
+                            entry.showingTranslation = !entry.showingTranslation
+                            showTranslation(ctx2, entry.original, entry.translated)
                             menu.dismiss()
                         }
                     }
                 })
-
-                // 全体翻訳ボタンの追加とリスナー設定
+        
+                // 全体翻訳ボタン
                 linearLayout.addView(TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                     id = autoButtonId
                     text = if (channelId in autoChannels) "Disable Full Translate" else "Enable Full Translate"
-                    setOnClickListener {
-                        if (channelId in autoChannels) {
-                            autoChannels.remove(channelId)
-                            Utils.showToast("Disabled Full Translate")
-                        } else {
-                            autoChannels.add(channelId)
-                            Utils.showToast("Enabled Full Translate")
-                        }
-                        menu.dismiss()
-                    }
                 })
             }
         )
