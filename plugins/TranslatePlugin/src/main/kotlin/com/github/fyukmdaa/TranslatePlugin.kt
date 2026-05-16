@@ -33,14 +33,13 @@ class TranslatePlugin : Plugin() {
     private val autoChannels = mutableSetOf<Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
     
-    // 安全なコンテキストを保持しておく
     private lateinit var safeContext: Context
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
     override fun start(ctx: Context) {
         safeContext = ctx
-        logger.info("TranslatePlugin started")
+        logger.info("▶️ TranslatePlugin started")
         
         val buttonId = View.generateViewId()
         val autoButtonId = View.generateViewId()
@@ -49,7 +48,7 @@ class TranslatePlugin : Plugin() {
         val getBinding = try {
             messageContextMenu.getDeclaredMethod("getBinding").apply { isAccessible = true }
         } catch (e: Exception) {
-            logger.error("getBinding method not found", e)
+            logger.error("❌ getBinding method not found", e)
             return
         }
 
@@ -71,15 +70,20 @@ class TranslatePlugin : Plugin() {
                     if (entry == null) {
                         Thread {
                             try {
-                                val content = message.content ?: return@Thread
-                                // ⚠️ ここでは logger を呼ばない！スレッドセーフではないため
+                                // 【修正】message.content は null の可能性があるため ? をつけ、
+                                // かつ Spanned 等の複雑なオブジェクトの場合に備えて明示的に String に変換します
+                                val rawContent = message.content
+                                val content = if (rawContent is String) rawContent else rawContent?.toString() ?: return@Thread
+                                
+                                // 文字列が空なら何もしない
+                                if (content.isBlank()) return@Thread
+
                                 val result = Translator.translate(content, targetLang())
                                 
                                 if (result.isNotBlank()) {
                                     translatedMessages[message.id] = TranslatedEntry(content, result)
                                     
                                     mainHandler.post {
-                                        // メインスレッドに戻ってからログを出す
                                         logger.info("Translation success for msg ${message.id}")
                                         showTranslation(safeContext, content, result)
                                         menu.dismiss()
@@ -87,9 +91,9 @@ class TranslatePlugin : Plugin() {
                                 }
                             } catch (e: Exception) {
                                 mainHandler.post { 
-                                    val msg = "Err: ${e.javaClass.simpleName}: ${e.message}"
-                                    logger.error(msg, null)
-                                    Toast.makeText(safeContext, msg, Toast.LENGTH_SHORT).show() 
+                                    val msg = "Err: ${e.javaClass.simpleName}"
+                                    logger.error(msg, null) // 詳細メッセージを出すとまたエラーになる可能性があるためシンプルに
+                                    Toast.makeText(safeContext, "Translation Failed", Toast.LENGTH_SHORT).show() 
                                 }
                             }
                         }.start()
