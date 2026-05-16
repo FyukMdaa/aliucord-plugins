@@ -83,7 +83,7 @@ class TranslatePlugin : Plugin() {
                         adapterField = WidgetChatList::class.java.declaredFields.find { it.type.name.contains("WidgetChatListAdapter") }
                         adapterField?.isAccessible = true
                     }
-                    val adapter = adapterField?.get(list) ?: return
+                    val adapter = adapterField?.get(list) ?: return@post
                     
                     if (dataField == null) {
                         var clazz: Class<*>? = adapter.javaClass
@@ -96,14 +96,13 @@ class TranslatePlugin : Plugin() {
                         dataField?.isAccessible = true
                     }
                     
-                    val data = dataField?.get(adapter) as? List<*> ?: return
+                    val data = dataField?.get(adapter) as? List<*> ?: return@post
                     val index = data.indexOfFirst { 
                         val entry = it as? MessageEntry
                         entry?.message?.id == id
                     }
                     
                     if (index != -1) {
-                        // RecyclerView.Adapter の notifyItemChanged を探す
                         var notifyMethod: Method? = null
                         var currentClass: Class<*>? = adapter.javaClass
                         while (currentClass != null && notifyMethod == null) {
@@ -115,9 +114,7 @@ class TranslatePlugin : Plugin() {
                         }
                         notifyMethod?.invoke(adapter, index)
                     }
-                } catch (ex: Exception) {
-                    // logger.error("❌ Failed to rerender message $id", ex)
-                }
+                } catch (ex: Exception) { }
             }
         }
     }
@@ -135,7 +132,6 @@ class TranslatePlugin : Plugin() {
                     rerenderMessage(messageId)
                 }
             } catch (e: Exception) {
-                // エラー時は何もしない
             } finally {
                 translatingIds.remove(messageId)
             }
@@ -172,7 +168,6 @@ class TranslatePlugin : Plugin() {
                         val message = cf.thisObject as Message
                         val entry = translatedMessages[message.id]
                         
-                        // 自動翻訳のチェック
                         if (entry == null && message.channelId in autoChannels && !isBlankSafe(message.content ?: "")) {
                             translateAsync(message.id, message.content, targetLang())
                         }
@@ -186,7 +181,6 @@ class TranslatePlugin : Plugin() {
                         }
                     } catch (e: Exception) { }
                 })
-                logger.info("✅ Message data patch applied")
             } catch (e: Exception) {
                 logger.error("❌ Failed to patch Message.getContent", e)
             }
@@ -238,7 +232,6 @@ class TranslatePlugin : Plugin() {
                                 } else {
                                     autoChannels.add(message.channelId)
                                     Toast.makeText(menu.requireContext(), "Auto-Translate ON", Toast.LENGTH_SHORT).show()
-                                    // 既に表示されているメッセージを翻訳するために再描画をトリガー
                                     rerenderMessage(message.id)
                                 }
                                 menu.dismiss()
