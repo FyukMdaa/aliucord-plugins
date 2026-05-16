@@ -2,11 +2,14 @@ package com.github.fyukmdaa
 
 import android.content.Context
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.widget.NestedScrollView
-import com.aliucord.Utils
+import com.aliucord.Logger
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
@@ -28,6 +31,9 @@ class TranslatePlugin : Plugin() {
     )
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
     private val autoChannels = mutableSetOf<Long>()
+
+    // メインスレッド用ハンドラ（Utils.mainThreadの代わり）
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
@@ -66,26 +72,33 @@ class TranslatePlugin : Plugin() {
                 
                 logger.debug("message.id=${message.id}, channelId=${message.channelId}")
 
-                // 🔹 Translate Button
+                // Translate Button
                 binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
                     logger.info("Translate button clicked")
                     val entry = translatedMessages[message.id]
                     if (entry == null) {
-                        Utils.threadPool.execute {
+                        // Utils.threadPoolを使用せず、生のThreadを使用します
+                        Thread {
                             try {
-                                val content = message.content ?: return@execute
+                                val content = message.content ?: return@Thread
                                 val result = Translator.translate(content, targetLang())
-                                if (result.isBlank()) return@execute
+                                if (result.isBlank()) return@Thread
+                                
                                 translatedMessages[message.id] = TranslatedEntry(content, result)
-                                Utils.mainThread.post {
+                                
+                                // Utils.mainThreadを使用せず、Handlerを使用します
+                                mainHandler.post {
                                     showTranslation(menu.requireContext(), content, result)
                                     menu.dismiss()
                                 }
                             } catch (e: Exception) {
-                                logger.error("Translation failed", e)
-                                Utils.mainThread.post { Utils.showToast("Error: ${e.message}") }
+                                // ログに出すだけで、例外オブジェクト自体をログに渡さないようにします（これでキャストエラーを防ぐ）
+                                logger.error("Translation failed: ${e.message}")
+                                mainHandler.post { 
+                                    Toast.makeText(menu.requireContext(), "Error: ${e.message}", Toast.LENGTH_SHORT).show() 
+                                }
                             }
-                        }
+                        }.start()
                     } else {
                         entry.showingTranslation = !entry.showingTranslation
                         showTranslation(menu.requireContext(), entry.original, entry.translated)
@@ -98,10 +111,10 @@ class TranslatePlugin : Plugin() {
                     logger.info("Auto-translate button clicked, channelId=${message.channelId}")
                     if (message.channelId in autoChannels) {
                         autoChannels.remove(message.channelId)
-                        Utils.showToast("Auto-Translate OFF")
+                        Toast.makeText(ctx, "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
                     } else {
                         autoChannels.add(message.channelId)
-                        Utils.showToast("Auto-Translate ON")
+                        Toast.makeText(ctx, "Auto-Translate ON", Toast.LENGTH_SHORT).show()
                     }
                     menu.dismiss()
                 }
@@ -145,7 +158,7 @@ class TranslatePlugin : Plugin() {
                     }
                 val entry = translatedMessages[messageId]
                 translateBtn.text = when {
-                    entry == null -> "Translate"
+                    entry == null -> "Translate Message"
                     entry.showingTranslation -> "Show Original"
                     else -> "Show Translation"
                 }
