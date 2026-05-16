@@ -5,10 +5,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.widget.NestedScrollView
+import androidx.recyclerview.widget.RecyclerView
 import com.aliucord.Logger
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
@@ -62,51 +64,72 @@ class TranslatePlugin : Plugin() {
                 return
             }
 
-            // ── 0. 【修正】メッセージ表示時にテキストを書き換えるパッチ ─────────────────
+            // ── 0. 【決定版】メッセージ書き換えパッチ ─────────────────────────────
             try {
                 val itemClassName = "com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage"
-                val methodName = "onConfigure"
+                val messageClass = Class.forName("com.discord.models.message.Message")
                 
-                // 【修正】 null の代わりに emptyArray<Class<*>>() を渡す
-                patcher.patch(itemClassName, methodName, emptyArray<Class<*>>(), Hook { cf ->
-                    try {
-                        val message = cf.args[0] as? Message ?: return@Hook
-                        
-                        val entry = translatedMessages[message.id]
-                        if (entry != null && entry.showingTranslation) {
-                            val itemClass = Class.forName(itemClassName)
-                            val bindingField = itemClass.getDeclaredField("binding").apply { isAccessible = true }
-                            val binding = bindingField.get(cf.thisObject)
+                // onConfigure(Message, Int, Boolean) などのシグネチャに対応するため、
+                // 引数の数や型を柔軟に扱う必要があるが、Aliucordのpatcherは正確な型を必要とする。
+                // 一般的なシグネチャ (Message, Int) を試す
+                patcher.patch(
+                    itemClassName, 
+                    "onConfigure", 
+                    arrayOf<Class<*>>(messageClass, Int::class.javaPrimitiveType), 
+                    Hook { cf ->
+                        try {
+                            val message = cf.args[0] as? Message ?: return@Hook
+                            val entry = translatedMessages[message.id]
                             
-                            val bindingClass = binding.javaClass
-                            val contentViewField = bindingClass.getDeclaredField("chatListContentView").apply { isAccessible = true }
-                            val contentView = contentViewField.get(binding) as? View
-                            
-                            if (contentView != null) {
-                                val context = contentView.context
-                                val msgId = context.resources.getIdentifier("chat_list_item_message", "id", "com.discord")
-                                
-                                val textView = if (msgId != 0) {
-                                    contentView.findViewById<TextView>(msgId)
-                                } else {
-                                    findTextView(contentView)
-                                }
+                            if (entry != null && entry.showingTranslation) {
+                                // 【重要】ViewHolderからitemViewを取得する (Bindingフィールド名に依存しない)
+                                // RecyclerView.ViewHolder.itemView は親クラスのフィールドなので安全
+                                val viewHolder = cf.thisObject
+                                val itemViewField = RecyclerView.ViewHolder::class.java.getDeclaredField("itemView").apply { isAccessible = true }
+                                val itemView = itemViewField.get(viewHolder) as? View ?: return@Hook
 
-                                if (textView != null) {
-                                    textView.text = entry.translated
+                                // 本文と一致するTextViewを探して書き換える
+                                replaceTextViewText(itemView, entry.original, entry.translated)
+                            }
+                        } catch (e: Exception) {
+                            // エラーはログに出すが、クラッシュはさせない
+                            logger.error("Error in message rewrite hook: ${e.message}", null)
+                        }
+                    }
+                )
+                logger.info("✅ Message rewrite patch applied (Method: onConfigure)")
+            } catch (e: Exception) {
+                // onConfigure(Message, Int) で失敗した場合、別のシグネチャを試すか諦める
+                logger.error("❌ Failed to patch onConfigure (maybe signature changed)", e)
+                // 念のため configure(Message) も試す
+                try {
+                    val messageClass = Class.forName("com.discord.models.message.Message")
+                    patcher.patch(
+                        itemClassName, 
+                        "configure", 
+                        arrayOf<Class<*>>(messageClass), 
+                        Hook { cf ->
+                            try {
+                                val message = cf.args[0] as? Message ?: return@Hook
+                                val entry = translatedMessages[message.id]
+                                if (entry != null && entry.showingTranslation) {
+                                    val viewHolder = cf.thisObject
+                                    val itemViewField = RecyclerView.ViewHolder::class.java.getDeclaredField("itemView").apply { isAccessible = true }
+                                    val itemView = itemViewField.get(viewHolder) as? View ?: return@Hook
+                                    replaceTextViewText(itemView, entry.original, entry.translated)
                                 }
+                            } catch (e: Exception) {
+                                logger.error("Error in configure hook", null)
                             }
                         }
-                    } catch (e: Exception) {
-                        // エラー無視
-                    }
-                })
-                logger.info("✅ Message rewrite patch applied")
-            } catch (e: Exception) {
-                logger.error("❌ Failed to apply message rewrite patch", e)
+                    )
+                    logger.info("✅ Message rewrite patch applied (Method: configure)")
+                } catch (e2: Exception) {
+                    logger.error("❌ Failed to patch configure as well", e2)
+                }
             }
 
-            // ── 1. configureUI Patch ───────────────────────────────
+            // ── 1. configureUI Patch (ボタン動作) ───────────────────────────────
             try {
                 val configureMethod = try {
                     messageContextMenu.getDeclaredMethod("configureUI", WidgetChatListActions.Model::class.java)
@@ -235,16 +258,21 @@ class TranslatePlugin : Plugin() {
         patcher.unpatchAll()
     }
 
-    private fun findTextView(view: View): TextView? {
+    // 【改善】原文と一致するTextViewを探して置換する関数
+    private fun replaceTextViewText(view: View, original: String, translated: String) {
         if (view is TextView) {
-            if (view.id != View.NO_ID) return view
-        } else if (view is LinearLayout) {
+            // TextViewなら内容を比較
+            // Markdown等が含まれていても toString() で平文になるので比較可能
+            if (view.text.toString() == original) {
+                view.text = translated
+                return
+            }
+        } else if (view is ViewGroup) {
+            // ViewGroupなら再帰的に子を探索
             for (i in 0 until view.childCount) {
-                val found = findTextView(view.getChildAt(i))
-                if (found != null) return found
+                replaceTextViewText(view.getChildAt(i), original, translated)
             }
         }
-        return null
     }
 
     private fun showTranslation(ctx: Context, original: String, translated: String) {
