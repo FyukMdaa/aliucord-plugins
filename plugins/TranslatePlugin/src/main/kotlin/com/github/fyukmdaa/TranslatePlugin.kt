@@ -40,6 +40,7 @@ class TranslatePlugin : Plugin() {
     )
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
     private val autoChannels = mutableSetOf<Long>()
+    private val translatingIds = mutableSetOf<Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
     
     private var chatList: WidgetChatList? = null
@@ -48,6 +49,7 @@ class TranslatePlugin : Plugin() {
     private var dataField: Field? = null
 
     private fun targetLang() = settings.getString("targetLang", "ja")
+    private fun showOriginal() = settings.getBool("showOriginal", true)
 
     private fun isBlankSafe(str: String): Boolean {
         if (str.isEmpty()) return true
@@ -59,52 +61,85 @@ class TranslatePlugin : Plugin() {
 
     private fun rerenderMessage(id: Long) {
         val list = chatList ?: return
-        try {
-            if (rerenderMethod == null) {
-                try {
-                    rerenderMethod = WidgetChatList::class.java.getDeclaredMethod("rerenderMessage", Long::class.javaPrimitiveType)
-                    rerenderMethod?.isAccessible = true
-                } catch (e: Exception) {
-                    rerenderMethod = WidgetChatList::class.java.declaredMethods.find { 
-                        it.parameterTypes.size == 1 && it.parameterTypes[0] == Long::class.javaPrimitiveType && it.returnType == Void.TYPE
-                    }
-                    rerenderMethod?.isAccessible = true
-                }
-            }
-            rerenderMethod?.invoke(list, id)
-        } catch (e: Exception) {
+        mainHandler.post {
             try {
-                if (adapterField == null) {
-                    adapterField = WidgetChatList::class.java.declaredFields.find { it.type.name.contains("WidgetChatListAdapter") }
-                    adapterField?.isAccessible = true
-                }
-                val adapter = adapterField?.get(list) ?: return
-                
-                if (dataField == null) {
-                    var clazz: Class<*>? = adapter.javaClass
-                    while (clazz != null && dataField == null) {
-                        dataField = clazz.declaredFields.find { 
-                            List::class.java.isAssignableFrom(it.type) && !Modifier.isStatic(it.modifiers)
+                // 1. rerenderMessage メソッドの試行
+                if (rerenderMethod == null) {
+                    try {
+                        rerenderMethod = WidgetChatList::class.java.getDeclaredMethod("rerenderMessage", Long::class.javaPrimitiveType)
+                        rerenderMethod?.isAccessible = true
+                    } catch (e: Exception) {
+                        rerenderMethod = WidgetChatList::class.java.declaredMethods.find { 
+                            it.parameterTypes.size == 1 && it.parameterTypes[0] == Long::class.javaPrimitiveType && it.returnType == Void.TYPE
                         }
-                        clazz = clazz.superclass
+                        rerenderMethod?.isAccessible = true
                     }
-                    dataField?.isAccessible = true
                 }
-                
-                val data = dataField?.get(adapter) as? List<*> ?: return
-                val index = data.indexOfFirst { 
-                    val entry = it as? MessageEntry
-                    entry?.message?.id == id
+                rerenderMethod?.invoke(list, id)
+            } catch (e: Exception) {
+                // 2. Adapter を使用した再描画 (フォールバック)
+                try {
+                    if (adapterField == null) {
+                        adapterField = WidgetChatList::class.java.declaredFields.find { it.type.name.contains("WidgetChatListAdapter") }
+                        adapterField?.isAccessible = true
+                    }
+                    val adapter = adapterField?.get(list) ?: return
+                    
+                    if (dataField == null) {
+                        var clazz: Class<*>? = adapter.javaClass
+                        while (clazz != null && dataField == null) {
+                            dataField = clazz.declaredFields.find { 
+                                List::class.java.isAssignableFrom(it.type) && !Modifier.isStatic(it.modifiers)
+                            }
+                            clazz = clazz.superclass
+                        }
+                        dataField?.isAccessible = true
+                    }
+                    
+                    val data = dataField?.get(adapter) as? List<*> ?: return
+                    val index = data.indexOfFirst { 
+                        val entry = it as? MessageEntry
+                        entry?.message?.id == id
+                    }
+                    
+                    if (index != -1) {
+                        // RecyclerView.Adapter の notifyItemChanged を探す
+                        var notifyMethod: Method? = null
+                        var currentClass: Class<*>? = adapter.javaClass
+                        while (currentClass != null && notifyMethod == null) {
+                            try {
+                                notifyMethod = currentClass.getDeclaredMethod("notifyItemChanged", Int::class.javaPrimitiveType)
+                            } catch (ex: NoSuchMethodException) {
+                                currentClass = currentClass.superclass
+                            }
+                        }
+                        notifyMethod?.invoke(adapter, index)
+                    }
+                } catch (ex: Exception) {
+                    // logger.error("❌ Failed to rerender message $id", ex)
                 }
-                
-                if (index != -1) {
-                    val notifyMethod = adapter.javaClass.superclass.superclass.superclass.getDeclaredMethod("notifyItemChanged", Int::class.javaPrimitiveType)
-                    notifyMethod.invoke(adapter, index)
-                }
-            } catch (ex: Exception) {
-                logger.error("❌ Failed to rerender message $id", ex)
             }
         }
+    }
+
+    private fun translateAsync(messageId: Long, content: String, lang: String, onComplete: (() -> Unit)? = null) {
+        if (messageId in translatingIds) return
+        translatingIds.add(messageId)
+
+        Thread {
+            try {
+                val result = Translator.translate(content, lang)
+                if (result.isNotEmpty()) {
+                    translatedMessages[messageId] = TranslatedEntry(content, result)
+                    onComplete?.invoke()
+                    rerenderMessage(messageId)
+                }
+            } catch (e: Exception) {
+                // エラー時は何もしない
+            } finally {
+                translatingIds.remove(messageId)
+            }
+        }.start()
     }
 
     override fun start(ctx: Context) {
@@ -131,20 +166,27 @@ class TranslatePlugin : Plugin() {
             }
 
             // ── 1. メッセージデータレベルの書き換え (Message.getContent) ─────────────────────────────
-            // View ではなくデータそのものを書き換えることで、あらゆる場所での表示に対応
             try {
                 patcher.patch(Message::class.java, "getContent", emptyArray(), Hook { cf ->
                     try {
                         val message = cf.thisObject as Message
                         val entry = translatedMessages[message.id]
-                        if (entry != null && entry.showingTranslation) {
-                            cf.result = entry.translated
+                        
+                        // 自動翻訳のチェック
+                        if (entry == null && message.channelId in autoChannels && !isBlankSafe(message.content ?: "")) {
+                            translateAsync(message.id, message.content, targetLang())
                         }
-                    } catch (e: Exception) {
-                        // ループを防ぐためログは最小限に
-                    }
+
+                        if (entry != null && entry.showingTranslation) {
+                            if (showOriginal()) {
+                                cf.result = "${entry.original}\n---\n${entry.translated}"
+                            } else {
+                                cf.result = entry.translated
+                            }
+                        }
+                    } catch (e: Exception) { }
                 })
-                logger.info("✅ Message data patch applied (Message.getContent)")
+                logger.info("✅ Message data patch applied")
             } catch (e: Exception) {
                 logger.error("❌ Failed to patch Message.getContent", e)
             }
@@ -176,24 +218,12 @@ class TranslatePlugin : Plugin() {
                                     val content = message.content ?: return@setOnClickListener
                                     if (isBlankSafe(content)) return@setOnClickListener
                                     
-                                    val lang = targetLang()
-                                    Thread {
-                                        try {
-                                            val result = Translator.translate(content, lang)
-                                            if (result.isNotEmpty()) {
-                                                translatedMessages[message.id] = TranslatedEntry(content, result)
-                                                mainHandler.post {
-                                                    Toast.makeText(menu.requireContext(), "Message Translated!", Toast.LENGTH_SHORT).show()
-                                                    rerenderMessage(message.id)
-                                                    menu.dismiss()
-                                                }
-                                            }
-                                        } catch (e: Exception) {
-                                            mainHandler.post { 
-                                                Toast.makeText(menu.requireContext(), "Translation Failed", Toast.LENGTH_SHORT).show() 
-                                            }
+                                    translateAsync(message.id, content, targetLang()) {
+                                        mainHandler.post {
+                                            Toast.makeText(menu.requireContext(), "Message Translated!", Toast.LENGTH_SHORT).show()
                                         }
-                                    }.start()
+                                    }
+                                    menu.dismiss()
                                 } else {
                                     entry.showingTranslation = !entry.showingTranslation
                                     rerenderMessage(message.id)
@@ -208,6 +238,8 @@ class TranslatePlugin : Plugin() {
                                 } else {
                                     autoChannels.add(message.channelId)
                                     Toast.makeText(menu.requireContext(), "Auto-Translate ON", Toast.LENGTH_SHORT).show()
+                                    // 既に表示されているメッセージを翻訳するために再描画をトリガー
+                                    rerenderMessage(message.id)
                                 }
                                 menu.dismiss()
                             }

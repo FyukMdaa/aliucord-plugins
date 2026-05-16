@@ -21,10 +21,21 @@ class PluginSettings(private val settings: SettingsAPI) : SettingsPage() {
         val langInput = TextInput(ctx, "Target language code (ex. ja, en, zh-CN)")
         val langEditText = langInput.editText!!.apply {
             maxLines = 1
-            // 保存されている設定があれば読み込み、なければ "ja" をデフォルトにする
             setText(settings.getString("targetLang", "ja"))
         }
         addView(langInput)
+
+        addView(Divider(ctx))
+
+        // 原文を併記するオプション
+        val showOriginalCheckbox = CheckBox(ctx).apply {
+            text = "Show original text with translation"
+            isChecked = settings.getBool("showOriginal", true)
+            setOnCheckedChangeListener { _, isChecked ->
+                settings.setBool("showOriginal", isChecked)
+            }
+        }
+        addView(showOriginalCheckbox)
 
         addView(Divider(ctx))
 
@@ -34,9 +45,9 @@ class PluginSettings(private val settings: SettingsAPI) : SettingsPage() {
             setOnClickListener {
                 val lang = langEditText.text.toString().trim()
                 if (lang.isNotEmpty()) {
-                    // 設定を保存
                     settings.setString("targetLang", lang)
-                    Toast.makeText(ctx, "Saved! Target: $lang", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(ctx, "Saved!", Toast.LENGTH_SHORT).show()
+                    close()
                 } else {
                     Toast.makeText(ctx, "Please enter a language code", Toast.LENGTH_SHORT).show()
                 }
