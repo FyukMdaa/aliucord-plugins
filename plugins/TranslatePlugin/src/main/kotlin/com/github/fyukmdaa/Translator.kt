@@ -10,14 +10,12 @@ import java.util.regex.Pattern
 object Translator {
 
     fun translate(text: String, targetLang: String): String {
-        // 1. URL エンコード
         val encodedText = try {
             URLEncoder.encode(text, "UTF-8")
         } catch (e: Exception) {
             throw RuntimeException("URL encode error", e)
         }
         
-        // 2. URL 構築
         val urlString = StringBuilder().apply {
             append("https://translate.googleapis.com/translate_a/single")
             append("?client=gtx")
@@ -27,14 +25,13 @@ object Translator {
             append("&q=$encodedText")
         }.toString()
 
-        // 3. HTTP リクエスト (Java標準のHttpURLConnectionを使用)
         var connection: HttpURLConnection? = null
         try {
             val url = URL(urlString)
             connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.setRequestProperty("User-Agent", "Mozilla/5.0")
-            connection.connectTimeout = 10000 // 10秒
+            connection.connectTimeout = 10000
             connection.readTimeout = 10000
 
             val responseCode = connection.responseCode
@@ -42,7 +39,6 @@ object Translator {
                 throw RuntimeException("HTTP $responseCode")
             }
 
-            // レスポンスの読み込み
             val reader = BufferedReader(InputStreamReader(connection.inputStream))
             val response = StringBuilder()
             var line: String?
@@ -62,7 +58,6 @@ object Translator {
 
     private fun parseResponseWithJavaRegex(body: String): String {
         try {
-            // 末尾のメタデータ（ハッシュなど）を回避するため、3文字以上のマッチのみ採用
             val pattern = Pattern.compile("""\["((?:[^"\\]|\\.)*)",""")
             val matcher = pattern.matcher(body)
             val result = StringBuilder()
@@ -70,6 +65,11 @@ object Translator {
 
             while (matcher.find()) {
                 val part = matcher.group(1) ?: continue
+                
+                // 【修正】Google Translateのメタデータ（32桁の16進数ハッシュ）を除外
+                // 例: "466914b2b9b759682681a550c00b67dd" のようなもの
+                if (part.matches(Regex("^[a-f0-9]{32}$"))) continue
+
                 if (part.length >= 3) {
                     result.append(unescapeJsonString(part))
                     foundTranslation = true
