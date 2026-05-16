@@ -9,6 +9,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.widget.NestedScrollView
+import androidx.recyclerview.widget.RecyclerView
 import com.aliucord.Logger
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
@@ -30,7 +31,6 @@ class TranslatePlugin : Plugin() {
         val translated: String,
         var showingTranslation: Boolean = true
     )
-    // messageId -> Entry
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
     private val autoChannels = mutableSetOf<Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -63,41 +63,53 @@ class TranslatePlugin : Plugin() {
                 return
             }
 
-            // ── 0. 【新機能】メッセージ表示時にテキストを書き換えるパッチ ─────────────────
+            // ── 0. 【修正】メッセージ表示時にテキストを書き換えるパッチ ─────────────────
             try {
-                // チャットリストのアイテム（1行1メッセージ）のクラス
-                val itemClass = Class.forName("com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage")
-                // バインディングクラス
-                val bindingClass = Class.forName("com.discord.databinding.WidgetChatListItemMessageBinding")
-
-                patcher.patch(itemClass, "onConfigure", null, Hook { cf ->
+                // クラス名をStringで指定
+                val itemClassName = "com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage"
+                // メソッド名
+                val methodName = "onConfigure"
+                
+                patcher.patch(itemClassName, methodName, null, Hook { cf ->
                     try {
-                        // メッセージオブジェクトを取得
+                        // 引数の0番目がMessageであることが多い
                         val message = cf.args[0] as? Message ?: return@Hook
                         
-                        // 翻訳済みデータがあるか確認
                         val entry = translatedMessages[message.id]
                         if (entry != null && entry.showingTranslation) {
-                            // バインディングを取得
+                            // ViewHolderからbindingを取得
+                            // クラス名が文字列なので、ここでリフレクションでクラスを取得する必要がある
+                            val itemClass = Class.forName(itemClassName)
                             val bindingField = itemClass.getDeclaredField("binding").apply { isAccessible = true }
                             val binding = bindingField.get(cf.thisObject)
                             
-                            // バインディングからテキストビューを探す
-                            // chatListContentView はメッセージ内容を含むビュー
+                            // bindingクラスもリフレクションで取得
+                            val bindingClass = binding.javaClass
+                            
+                            // chatListContentViewフィールドを取得
                             val contentViewField = bindingClass.getDeclaredField("chatListContentView").apply { isAccessible = true }
                             val contentView = contentViewField.get(binding) as? View
                             
                             if (contentView != null) {
-                                // R.i.chat_list_item_message はメッセージ本文のTextViewのID
-                                val textView = contentView.findViewById<TextView>(R.i.chat_list_item_message)
+                                // IDを動的に取得 (R.i は FlexInput のため使えない)
+                                // Discordのパッケージ "com.discord" からIDを探す
+                                val context = contentView.context
+                                val msgId = context.resources.getIdentifier("chat_list_item_message", "id", "com.discord")
+                                
+                                val textView = if (msgId != 0) {
+                                    contentView.findViewById<TextView>(msgId)
+                                } else {
+                                    // IDが見つからない場合、ViewGroupの子を探索してTextViewを探す
+                                    findTextView(contentView)
+                                }
+
                                 if (textView != null) {
                                     textView.text = entry.translated
                                 }
                             }
                         }
                     } catch (e: Exception) {
-                        // 個別のエラーは無視してログだけ出す（クラッシュ防止）
-                        // logger.error("Error in message rewrite", null) 
+                        // 個別のエラーは無視
                     }
                 })
                 logger.info("✅ Message rewrite patch applied")
@@ -142,16 +154,8 @@ class TranslatePlugin : Plugin() {
                                             translatedMessages[message.id] = TranslatedEntry(content, result)
                                             mainHandler.post {
                                                 logger.info("Translation success for msg ${message.id}")
-                                                // ダイアログは出さず、トーストだけ出す
-                                                Toast.makeText(menu.requireContext(), "Message Translated!", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(menu.requireContext(), "Message Translated! (Scroll to see)", Toast.LENGTH_SHORT).show()
                                                 menu.dismiss()
-                                                
-                                                // チャット画面を強制リロードして書き換えを反映させる
-                                                // リストをスクロールさせるなどして再描画を促すのが理想だが、
-                                                // 簡易的にユーザーに少しスクロールしてもらうか、
-                                                // もし可能なら adapter.notifyDataSetChanged() を叩きたいが
-                                                // ここでは安全策としてトーストのみ。
-                                                // (メッセージをスクロールして再表示させると翻訳が見えます)
                                             }
                                         }
                                     } catch (e: Exception) {
@@ -162,12 +166,9 @@ class TranslatePlugin : Plugin() {
                                     }
                                 }.start()
                             } else {
-                                // すでに翻訳済みの場合、オリジナルとトグルする
                                 entry.showingTranslation = !entry.showingTranslation
                                 Toast.makeText(menu.requireContext(), if(entry.showingTranslation) "Showing Translation" else "Showing Original", Toast.LENGTH_SHORT).show()
                                 menu.dismiss()
-                                // 再描画させるために何らかのアクションが必要だが、
-                                // 手軽な方法としてユーザーがスクロールすると反映される。
                             }
                         }
 
@@ -245,16 +246,21 @@ class TranslatePlugin : Plugin() {
         patcher.unpatchAll()
     }
 
-    // 今はダイアログを使わないのでこのメソッドは不要ですが、一応残しておきます
-    private fun showTranslation(ctx: Context, original: String, translated: String) {
-        try {
-            android.app.AlertDialog.Builder(ctx)
-                .setTitle("Translation")
-                .setMessage("$original\n\n---\n\n$translated")
-                .setPositiveButton("Close", null)
-                .show()
-        } catch (e: Exception) {
-            logger.error("Failed to show dialog: ${e.javaClass.simpleName}", null)
+    // ヘルパー: View階層を探索してTextViewを見つける
+    private fun findTextView(view: View): TextView? {
+        if (view is TextView) {
+            // IDが0（生成されたIDなど）でないTextViewを探す
+            if (view.id != View.NO_ID) return view
+        } else if (view is LinearLayout) {
+            for (i in 0 until view.childCount) {
+                val found = findTextView(view.getChildAt(i))
+                if (found != null) return found
+            }
         }
+        return null
+    }
+
+    private fun showTranslation(ctx: Context, original: String, translated: String) {
+        // 未使用
     }
 }
