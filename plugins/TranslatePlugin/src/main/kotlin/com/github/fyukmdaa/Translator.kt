@@ -2,18 +2,15 @@ package com.github.fyukmdaa
 
 import com.aliucord.Http
 import com.aliucord.Logger
-import org.json.JSONArray // Android標準のJSONを使用
 import java.net.URLEncoder
 
 object Translator {
     private val logger = Logger("TranslatePlugin")
 
     fun translate(text: String, targetLang: String): String {
-        // 1. 入力ログ
         val textPreview = if (text.length > 50) "${text.substring(0, 50)}..." else text
         logger.info("[1/4] translate start. text=$textPreview, lang=$targetLang")
 
-        // 2. URL エンコード
         val encodedText = try {
             URLEncoder.encode(text, "UTF-8")
         } catch (e: Exception) {
@@ -21,7 +18,6 @@ object Translator {
             throw RuntimeException("URL encode error", e)
         }
         
-        // 3. URL 構築
         val url = StringBuilder().apply {
             append("https://translate.googleapis.com/translate_a/single")
             append("?client=gtx")
@@ -33,7 +29,6 @@ object Translator {
         
         logger.debug("[2/4] Request URL: $url")
 
-        // 4. HTTP リクエスト & レスポンス処理
         val body = try {
             val request = Http.Request(url, "GET")
                 .setHeader("User-Agent", "Mozilla/5.0")
@@ -60,55 +55,58 @@ object Translator {
             throw e
         }
 
-        // ログ
         val bodyPreview = if (body.length > 300) "${body.substring(0, 300)}..." else body
         logger.debug("[4/4] Response body: $bodyPreview")
 
-        // 5. JSON 解析（安全な実装）
-        return parseResponseSafe(body)
+        // 【重要】JSONパースをやめて正規表現で抽出します
+        return parseResponseWithRegex(body)
     }
 
-    private fun parseResponseSafe(body: String): String {
+    private fun parseResponseWithRegex(body: String): String {
         return try {
-            // org.json.JSONArray を使用
-            val root = JSONArray(body)
+            // Google Translateの形式: [[["翻訳テキスト", "元テキスト", ...], ...], ...]
+            // 「["」で始まり、「","」で終わる箇所を探す（＝各セグメントの先頭、つまり翻訳結果）
+            // エスケープされたクオーテーション(\"など)を考慮した正規表現
+            val regex = Regex("""\["((?:[^"\\]|\\.)*)",""")
             
-            // 構造: [[["翻訳", "原文", ...], ...], ...]
-            // root[0] が翻訳結果の配列
-            if (root.length() == 0) {
-                logger.warn("[PARSE] Root array is empty")
-                return ""
-            }
-            
-            val sections = root.getJSONArray(0)
+            val matches = regex.findAll(body)
             val result = StringBuilder()
             
-            // 【重要】for (item in sections) だとエラーになるため、
-            // インデックスを使ったループ (0 until length) を使用します。
-            val len = sections.length()
-            for (i in 0 until len) {
-                try {
-                    val segment = sections.getJSONArray(i)
-                    // セグメントの0番目が翻訳テキスト
-                    if (segment.length() > 0) {
-                        val part = segment.optString(0)
-                        if (part.isNotEmpty()) {
-                            result.append(part)
-                        }
-                    }
-                } catch (e: Exception) {
-                    logger.warn("[PARSE] Failed to parse segment $i: ${e.message}")
-                }
+            var count = 0
+            for (match in matches) {
+                // group(1) がキャプチャされた翻訳テキスト
+                val translatedPart = match.groupValues[1]
+                // エスケープシーケンスをデコード (\" -> ", \/ -> /, \\ -> \ など)
+                val unescapedPart = unescapeJsonString(translatedPart)
+                
+                result.append(unescapedPart)
+                count++
+            }
+            
+            if (count == 0) {
+                logger.warn("[PARSE] No matches found in response.")
+                return ""
             }
             
             val finalResult = result.toString()
             val resultPreview = if (finalResult.length > 100) "${finalResult.substring(0, 100)}..." else finalResult
-            logger.info("[PARSE] success: $resultPreview")
+            logger.info("[PARSE] success (Regex): $resultPreview")
             
             finalResult
         } catch (e: Exception) {
-            logger.error("[PARSE] JSON parsing failed: ${e.message}", e)
-            throw RuntimeException("JSON parsing error", e)
+            logger.error("[PARSE] Regex parsing failed: ${e.message}", e)
+            throw RuntimeException("Parsing error", e)
         }
+    }
+
+    // JSON文字列内のエスケープを解除する簡易ヘルパー
+    private fun unescapeJsonString(str: String): String {
+        return str
+            .replace("\\\"", "\"")  // クオーテーション
+            .replace("\\/", "/")    // スラッシュ
+            .replace("\\\\", "\\")  // バックスラッシュ
+            .replace("\\n", "\n")   // 改行
+            .replace("\\r", "\r")   // 復帰
+            .replace("\\t", "\t")   // タブ
     }
 }
