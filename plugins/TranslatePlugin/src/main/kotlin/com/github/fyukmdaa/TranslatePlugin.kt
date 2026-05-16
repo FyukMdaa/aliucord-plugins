@@ -34,6 +34,14 @@ class TranslatePlugin : Plugin() {
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
+    // 🔧 リフレクションヘルパー（重複防止）
+    private inline fun <reified T> Any.getPrivateFieldOrNull(name: String): T? {
+        return this::class.java.declaredFields
+            .firstOrNull { it.name == name }
+            ?.also { it.isAccessible = true }
+            ?.get(this) as? T
+    }
+
     override fun start(ctx: Context) {
         val buttonId = View.generateViewId()
         val autoButtonId = View.generateViewId()
@@ -51,8 +59,11 @@ class TranslatePlugin : Plugin() {
                 val menu = cf.thisObject as WidgetChatListActions
                 val linearLayout = (cf.args[0] as NestedScrollView).getChildAt(0) as LinearLayout
                 val ctx2 = linearLayout.context
-                val messageId = WidgetChatListActions.`access$getMessageId$p`(menu)
-        
+                
+                // 🔧 messageId と channelId をリフレクションで取得
+                val messageId = menu.getPrivateFieldOrNull<Long>("messageId") ?: return@Hook
+                val channelId = menu.getPrivateFieldOrNull<Long>("channelId")
+
                 // メッセージ本文をリフレクションで取得
                 val messageField = WidgetChatListActions::class.java.declaredFields
                     .firstOrNull { it.type.simpleName == "Message" }
@@ -66,9 +77,10 @@ class TranslatePlugin : Plugin() {
                             ?.also { it.isAccessible = true }
                             ?.get(message) as? String
                     } ?: return@Hook
-        
+
                 val entry = translatedMessages[messageId]
-        
+
+                // 🔽 翻訳トグルボタン
                 linearLayout.addView(TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                     id = buttonId
                     text = when {
@@ -102,11 +114,28 @@ class TranslatePlugin : Plugin() {
                         }
                     }
                 })
-        
-                // 全体翻訳ボタン
+
+                // 🔽 全体翻訳トグルボタン（channelId の null 安全処理を追加）
                 linearLayout.addView(TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                     id = autoButtonId
-                    text = if (channelId in autoChannels) "Disable Full Translate" else "Enable Full Translate"
+                    text = if (channelId != null && channelId in autoChannels) {
+                        "Disable Full Translate"
+                    } else {
+                        "Enable Full Translate"
+                    }
+                    setOnClickListener {
+                        channelId?.let { cid ->
+                            if (cid in autoChannels) {
+                                autoChannels.remove(cid)
+                                text = "Enable Full Translate"
+                            } else {
+                                autoChannels.add(cid)
+                                text = "Disable Full Translate"
+                            }
+                            // 必要に応じて設定を永続化
+                            // settings.save()
+                        } ?: Utils.showToast("Channel ID not available")
+                    }
                 })
             }
         )
