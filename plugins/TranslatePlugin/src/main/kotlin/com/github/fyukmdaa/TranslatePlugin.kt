@@ -213,7 +213,12 @@ class TranslatePlugin : Plugin() {
         val list = chatList ?: return
         mainHandler.post {
             try {
-                list.rerenderMessage(id)
+                val method = WidgetChatList::class.java.declaredMethods.firstOrNull {
+                    it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0] == Long::class.javaPrimitiveType &&
+                    it.returnType == Void.TYPE
+                }?.apply { isAccessible = true }
+                method?.invoke(list, id)
             } catch (_: Exception) {}
         }
     }
