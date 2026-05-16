@@ -9,12 +9,12 @@ object Translator {
     private val logger = Logger("TranslatePlugin")
 
     fun translate(text: String, targetLang: String): String {
-        // 🔧 文字列テンプレート不使用: 安全な連結のみ
-        val textPreview = if (text.length > 50) text.substring(0, 50) + "..." else text
+        // 1. 入力ログ
+        val textPreview = text.substring(0, kotlin.math.min(50, text.length))
         logger.info("[1/4] translate start. text=" + textPreview + ", lang=" + targetLang)
 
-        // URL エンコード
-        val encodedText: String
+        // 2. URL エンコード
+        var encodedText = ""
         try {
             encodedText = URLEncoder.encode(text, "UTF-8")
         } catch (e: Exception) {
@@ -22,43 +22,47 @@ object Translator {
             throw RuntimeException("URL encode error", e)
         }
         
-        // 🔧 URL 構築も連結で
-        val url = "https://translate.googleapis.com/translate_a/single" +
-                "?client=gtx" +
-                "&sl=auto" +
-                "&tl=" + targetLang +
-                "&dt=t" +
-                "&q=" + encodedText
-        
+        // 3. URL 構築
+        val baseUrl = "https://translate.googleapis.com/translate_a/single"
+        val url = baseUrl + "?client=gtx&sl=auto&tl=" + targetLang + "&dt=t&q=" + encodedText
         logger.debug("[2/4] Request URL: " + url)
 
-        // HTTP リクエスト
-        val response: Http.Response
+        // 4. HTTP リクエスト
+        var response: Http.Response? = null
         try {
-            response = Http.Request(url, "GET").apply {
-                setHeader("User-Agent", "Mozilla/5.0")
-            }.execute()
+            val request = Http.Request(url, "GET")
+            request.setHeader("User-Agent", "Mozilla/5.0")
+            response = request.execute()
         } catch (e: Exception) {
             logger.error("HTTP execute failed: " + e.message, e)
             throw RuntimeException("HTTP request failed: " + e.message, e)
         }
 
+        // 5. レスポンスチェック
+        if (response == null) {
+            throw RuntimeException("Response is null")
+        }
+        
         logger.debug("[3/4] HTTP status: " + response.statusCode + ", ok=" + response.ok())
 
         if (!response.ok()) {
-            val bodyPreview: String            try {
+            var bodyPreview = "(read failed)"            try {
                 val full = response.text()
-                bodyPreview = if (full.length > 200) full.substring(0, 200) + "..." else full
-            } catch (_: Exception) {
-                bodyPreview = "(read failed)"
+                if (full.length > 200) {
+                    bodyPreview = full.substring(0, 200) + "..."
+                } else {
+                    bodyPreview = full
+                }
+            } catch (e: Exception) {
+                // ignore
             }
             val msg = "HTTP " + response.statusCode + ": " + bodyPreview
             logger.error(msg, null)
             throw RuntimeException(msg)
         }
 
-        // レスポンス本文取得
-        val body: String
+        // 6. レスポンス本文取得
+        var body = ""
         try {
             body = response.text()
         } catch (e: Exception) {
@@ -69,14 +73,14 @@ object Translator {
         val bodyPreview = if (body.length > 300) body.substring(0, 300) + "..." else body
         logger.debug("[4/4] Response body: " + bodyPreview)
 
+        // 7. JSON 解析
         return parseResponseSafe(body)
     }
 
-    @Suppress("LoopWithTooManyJumpStatements")
     private fun parseResponseSafe(body: String): String {
         logger.debug("[PARSE] start. body length: " + body.length)
         
-        val json: JSONArray
+        var json: JSONArray? = null
         try {
             json = JSONArray(body)
             logger.debug("[PARSE] root array length: " + json.length())
@@ -85,17 +89,21 @@ object Translator {
             throw e
         }
         
-        if (json.length() == 0) {
+        if (json == null || json.length() == 0) {
             logger.warn("[PARSE] empty root array", null)
             return ""
         }
         
-        val sections: JSONArray
-        try {
-            sections = json.getJSONArray(0)
+        var sections: JSONArray? = null
+        try {            sections = json.getJSONArray(0)
             logger.debug("[PARSE] sections length: " + sections.length())
         } catch (e: Exception) {
-            logger.error("[PARSE] no array at index 0: " + e.message, e)            return ""
+            logger.error("[PARSE] no array at index 0: " + e.message, e)
+            return ""
+        }
+        
+        if (sections == null) {
+            return ""
         }
         
         val result = StringBuilder()
