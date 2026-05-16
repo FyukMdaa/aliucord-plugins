@@ -32,7 +32,7 @@ class TranslatePlugin : Plugin() {
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
     private val autoChannels = mutableSetOf<Long>()
 
-    // メインスレッド用ハンドラ（Utils.mainThreadの代わり）
+    // メインスレッド用ハンドラ
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private fun targetLang() = settings.getString("targetLang", "ja")
@@ -72,12 +72,11 @@ class TranslatePlugin : Plugin() {
                 
                 logger.debug("message.id=${message.id}, channelId=${message.channelId}")
 
-                // Translate Button
+                // 🔹 Translate Button
                 binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
                     logger.info("Translate button clicked")
                     val entry = translatedMessages[message.id]
                     if (entry == null) {
-                        // Utils.threadPoolを使用せず、生のThreadを使用します
                         Thread {
                             try {
                                 val content = message.content ?: return@Thread
@@ -86,14 +85,15 @@ class TranslatePlugin : Plugin() {
                                 
                                 translatedMessages[message.id] = TranslatedEntry(content, result)
                                 
-                                // Utils.mainThreadを使用せず、Handlerを使用します
                                 mainHandler.post {
                                     showTranslation(menu.requireContext(), content, result)
                                     menu.dismiss()
                                 }
                             } catch (e: Exception) {
-                                // ログに出すだけで、例外オブジェクト自体をログに渡さないようにします（これでキャストエラーを防ぐ）
-                                logger.error("Translation failed: ${e.message}")
+                                // 【修正】e.message を文字列結合し、第2引数には null を渡す
+                                val errorMsg = "Translation failed: ${e.message}"
+                                logger.error(errorMsg, null)
+                                
                                 mainHandler.post { 
                                     Toast.makeText(menu.requireContext(), "Error: ${e.message}", Toast.LENGTH_SHORT).show() 
                                 }
