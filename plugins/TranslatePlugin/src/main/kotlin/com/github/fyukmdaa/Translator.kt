@@ -1,9 +1,11 @@
 package com.github.fyukmdaa
 
-import com.aliucord.Http
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 import java.util.regex.Pattern
-import java.util.regex.Matcher
 
 object Translator {
 
@@ -16,7 +18,7 @@ object Translator {
         }
         
         // 2. URL 構築
-        val url = StringBuilder().apply {
+        val urlString = StringBuilder().apply {
             append("https://translate.googleapis.com/translate_a/single")
             append("?client=gtx")
             append("&sl=auto")
@@ -25,42 +27,49 @@ object Translator {
             append("&q=$encodedText")
         }.toString()
 
-        // 3. HTTP リクエスト & レスポンス処理
-        val body = try {
-            val request = Http.Request(url, "GET")
-                .setHeader("User-Agent", "Mozilla/5.0")
-            val response = request.execute()
-            
-            if (response == null) throw RuntimeException("Response is null")
-            if (!response.ok()) {
-                val errorBody = try { response.text() } catch (e: Exception) { "(read failed)" }
-                throw RuntimeException("HTTP ${response.statusCode}: $errorBody")
-            }
-            response.text()
-        } catch (e: Exception) {
-            throw e
-        }
+        // 3. HTTP リクエスト (Java標準のHttpURLConnectionを使用)
+        var connection: HttpURLConnection? = null
+        try {
+            val url = URL(urlString)
+            connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+            connection.connectTimeout = 10000 // 10秒
+            connection.readTimeout = 10000
 
-        // 4. JSON 解析 (ロガーなし)
-        return parseResponseWithJavaRegex(body)
+            val responseCode = connection.responseCode
+            if (responseCode != 200) {
+                throw RuntimeException("HTTP $responseCode")
+            }
+
+            // レスポンスの読み込み
+            val reader = BufferedReader(InputStreamReader(connection.inputStream))
+            val response = StringBuilder()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                response.append(line)
+            }
+            reader.close()
+
+            return parseResponseWithJavaRegex(response.toString())
+
+        } catch (e: Exception) {
+            throw RuntimeException("Request failed", e)
+        } finally {
+            connection?.disconnect()
+        }
     }
 
     private fun parseResponseWithJavaRegex(body: String): String {
         try {
-            // パターン: ["翻訳テキスト","原文", ...] の構造を抽出
-            // ただし、Google Translateのレスポンス末尾にはメタデータ [[["ハッシュ","ファイル名"]]] があるため、
-            // これを避けるために、キャプチャした文字列がある程度の長さ（3文字以上）であることを確認します。
+            // 末尾のメタデータ（ハッシュなど）を回避するため、3文字以上のマッチのみ採用
             val pattern = Pattern.compile("""\["((?:[^"\\]|\\.)*)",""")
-
             val matcher = pattern.matcher(body)
             val result = StringBuilder()
             var foundTranslation = false
 
             while (matcher.find()) {
                 val part = matcher.group(1) ?: continue
-                
-                // メタデータ（ハッシュなど）は短い場合が多いので、極端に短いものは無視
-                // これによりレスポンス末尾のゴミを除外します
                 if (part.length >= 3) {
                     result.append(unescapeJsonString(part))
                     foundTranslation = true
