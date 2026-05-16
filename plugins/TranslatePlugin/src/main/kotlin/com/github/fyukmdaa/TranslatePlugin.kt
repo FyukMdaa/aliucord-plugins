@@ -35,39 +35,36 @@ class TranslatePlugin : Plugin() {
         val onViewCreated = WidgetChatListActions::class.java.getDeclaredMethod(
             "onViewCreated", View::class.java, Bundle::class.java
         )
+
         patcher.patch(onViewCreated, Hook { cf ->
             val actions = cf.thisObject as WidgetChatListActions
-
+        
             val messageField = WidgetChatListActions::class.java
                 .declaredFields
                 .firstOrNull { it.type == Message::class.java }
                 ?: return@Hook
             messageField.isAccessible = true
             val message = messageField.get(actions) as? Message ?: return@Hook
-
-            val layout = actions.requireView().findViewById<LinearLayout>(
-                com.discord.R.id.dialog_chat_actions_root
-            ) ?: (actions.requireView() as? ViewGroup) ?: return@Hook
-
+        
+            val layout = actions.requireView() as? ViewGroup ?: return@Hook
+        
             val channelId = message.channelId
-
-            // 「翻訳」ボタン
-            addActionButton(layout, actions.requireContext(), "🌐 翻訳") {
+        
+            addActionButton(layout, actions.requireContext(), "Translate message") {
                 val content = message.content
                 if (content.isNullOrBlank()) return@addActionButton
                 translateAndShow(actions.requireContext(), content, getTargetLang())
                 actions.dismiss()
             }
-
-            // 「全体翻訳 ON/OFF」ボタン
-            val autoLabel = if (channelId in autoChannels) "🌐 全体翻訳 OFF" else "🌐 全体翻訳 ON"
+        
+            val autoLabel = if (channelId in autoChannels) "Disable Full Translation" else "Enable Full Translation"
             addActionButton(layout, actions.requireContext(), autoLabel) {
                 if (channelId in autoChannels) {
                     autoChannels.remove(channelId)
-                    Toast.makeText(actions.requireContext(), "全体翻訳をOFFにしました", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(actions.requireContext(), "Disabled full translation", Toast.LENGTH_SHORT).show()
                 } else {
                     autoChannels.add(channelId)
-                    Toast.makeText(actions.requireContext(), "全体翻訳をONにしました", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(actions.requireContext(), "Enabled full translation", Toast.LENGTH_SHORT).show()
                 }
                 actions.dismiss()
             }
@@ -125,14 +122,14 @@ class TranslatePlugin : Plugin() {
                 val translated = Translator.translate(text, lang)
                 Handler(Looper.getMainLooper()).post {
                     AlertDialog.Builder(ctx)
-                        .setTitle("翻訳")
+                        .setTitle("Translate")
                         .setMessage("$text\n\n---\n\n$translated")
-                        .setPositiveButton("閉じる", null)
+                        .setPositiveButton("Close", null)
                         .show()
                 }
             } catch (e: Exception) {
                 Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(ctx, "翻訳エラー: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(ctx, "Translate error: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }.start()

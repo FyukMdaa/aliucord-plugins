@@ -19,7 +19,7 @@ class PluginSettings(private val settings: SettingsAPI) : AppFragment() {
         }
 
         // 対象言語
-        layout.addView(TextView(ctx).apply { text = "翻訳先言語コード (例: ja, en, zh-CN)" })
+        layout.addView(TextView(ctx).apply { text = "Target language code (ex: ja, en, zh-CN)" })
         val langInput = EditText(ctx).apply {
             setText(settings.getString("targetLang", "ja"))
         }
@@ -28,9 +28,9 @@ class PluginSettings(private val settings: SettingsAPI) : AppFragment() {
         layout.addView(Divider(ctx))
 
         // 全体翻訳モード
-        layout.addView(TextView(ctx).apply { text = "チャンネル全体翻訳" })
+        layout.addView(TextView(ctx).apply { text = "Full Translate for channel" })
         val autoSwitch = Switch(ctx).apply {
-            text = "有効にする"
+            text = "Enable"
             isChecked = settings.getBool("autoTranslate", false)
             setOnCheckedChangeListener { _, checked ->
                 settings.setBool("autoTranslate", checked)
@@ -40,10 +40,10 @@ class PluginSettings(private val settings: SettingsAPI) : AppFragment() {
 
         // 保存ボタン
         layout.addView(Button(ctx).apply {
-            text = "保存"
+            text = "Save"
             setOnClickListener {
                 settings.setString("targetLang", langInput.text.toString().trim())
-                Toast.makeText(ctx, "保存しました", Toast.LENGTH_SHORT).show()
+                Toast.makeText(ctx, "Saved", Toast.LENGTH_SHORT).show()
             }
         })
 
