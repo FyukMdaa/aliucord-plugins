@@ -63,7 +63,6 @@ class TranslatePlugin : Plugin() {
         val list = chatList ?: return
         mainHandler.post {
             try {
-                // 1. rerenderMessage メソッドの試行
                 if (rerenderMethod == null) {
                     try {
                         rerenderMethod = WidgetChatList::class.java.getDeclaredMethod("rerenderMessage", Long::class.javaPrimitiveType)
@@ -77,7 +76,6 @@ class TranslatePlugin : Plugin() {
                 }
                 rerenderMethod?.invoke(list, id)
             } catch (e: Exception) {
-                // 2. Adapter を使用した再描画 (フォールバック)
                 try {
                     if (adapterField == null) {
                         adapterField = WidgetChatList::class.java.declaredFields.find { it.type.name.contains("WidgetChatListAdapter") }
@@ -205,6 +203,9 @@ class TranslatePlugin : Plugin() {
                             
                             val model = cf.args[0] as? WidgetChatListActions.Model ?: return@Hook
                             val message = model.message
+                            
+                            // FragmentがアタッチされているContextを事前に取得
+                            val context = try { menu.requireContext() } catch (e: Exception) { null }
 
                             binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
                                 val entry = translatedMessages[message.id]
@@ -214,7 +215,9 @@ class TranslatePlugin : Plugin() {
                                     
                                     translateAsync(message.id, content, targetLang()) {
                                         mainHandler.post {
-                                            Toast.makeText(menu.requireContext(), "Message Translated!", Toast.LENGTH_SHORT).show()
+                                            if (context != null) {
+                                                Toast.makeText(context, "Message Translated!", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                     }
                                     menu.dismiss()
@@ -228,10 +231,10 @@ class TranslatePlugin : Plugin() {
                             binding.a.findViewById<TextView>(autoButtonId)?.setOnClickListener {
                                 if (message.channelId in autoChannels) {
                                     autoChannels.remove(message.channelId)
-                                    Toast.makeText(menu.requireContext(), "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
+                                    if (context != null) Toast.makeText(context, "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
                                 } else {
                                     autoChannels.add(message.channelId)
-                                    Toast.makeText(menu.requireContext(), "Auto-Translate ON", Toast.LENGTH_SHORT).show()
+                                    if (context != null) Toast.makeText(context, "Auto-Translate ON", Toast.LENGTH_SHORT).show()
                                     rerenderMessage(message.id)
                                 }
                                 menu.dismiss()
