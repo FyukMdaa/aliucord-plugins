@@ -20,15 +20,12 @@ class TranslatePlugin : Plugin() {
         settingsTab = SettingsTab(PluginSettings::class.java).withArgs(settings)
     }
 
-    // messageId -> 翻訳済みデータ
     private data class TranslatedEntry(
         val original: String,
         val translated: String,
         var showingTranslation: Boolean = true
     )
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
-
-    // チャンネルIDごとの全体翻訳ON状態
     private val autoChannels = mutableSetOf<Long>()
 
     private fun targetLang() = settings.getString("targetLang", "ja")
@@ -52,45 +49,41 @@ class TranslatePlugin : Plugin() {
             "onViewCreated",
             arrayOf(View::class.java, Bundle::class.java),
             Hook { cf ->
-                // 🔴 最重要: 元のメソッドを先に実行して、通常のメニュー表示を有効にする
-                cf.call()
+                // ✅ Aliucord の Hook は自動的に元のメソッドを呼び出すため、cf.call() は不要
 
                 val menu = cf.thisObject as WidgetChatListActions
-                // cf.args[0] は onViewCreated 第1引数の View
                 val rootView = cf.args[0] as? View ?: return@Hook
                 val ctx2 = rootView.context
 
-                // NestedScrollView 内の LinearLayout を探す（構造が変わっている可能性があるため柔軟に）
-                val linearLayout = if (rootView is LinearLayout) {
-                    rootView
-                } else {
-                    (rootView as? NestedScrollView)?.getChildAt(0) as? LinearLayout ?: return@Hook
-                }
+                // 🔽 LinearLayout の取得（構造変化に柔軟に対応）
+                val linearLayout = when (rootView) {
+                    is LinearLayout -> rootView
+                    is NestedScrollView -> rootView.getChildAt(0) as? LinearLayout
+                    else -> null
+                } ?: return@Hook
 
-                // 🔧 messageId と channelId をリフレクションで取得
-                // ※ 元のメソッド実行後にアクセスする必要がある
+                // 🔽 messageId 取得（必須フィールド、取得失敗時は処理をスキップ）
                 val messageId = menu.getPrivateFieldOrNull<Long>("messageId") ?: return@Hook
+                
+                // 🔽 channelId 取得（任意フィールド、null 許容）
                 val channelId = menu.getPrivateFieldOrNull<Long>("channelId")
 
-                // 📝 Message オブジェクトと content 取得
+                // 🔽 Message content 取得
                 val messageField = WidgetChatListActions::class.java.declaredFields
                     .firstOrNull { it.type.simpleName == "Message" }
                     ?.also { it.isAccessible = true }
                 val message = messageField?.get(menu)
                 
                 val content = message?.javaClass?.getMethod("getContent")?.invoke(message) as? String
-                    ?: run {
-                        message?.javaClass?.declaredFields
-                            ?.firstOrNull { it.type == String::class.java }
-                            ?.also { it.isAccessible = true }
-                            ?.get(message) as? String
-                    } ?: return@Hook
+                    ?: message?.javaClass?.declaredFields
+                        ?.firstOrNull { it.type == String::class.java }
+                        ?.also { it.isAccessible = true }
+                        ?.get(message) as? String
+                    ?: return@Hook // content 取得失敗時は処理をスキップ
 
-                val entry = translatedMessages[messageId]
-
-                // 🔽 翻訳トグルボタン（既存のボタンと重複しないよう ID 管理）
-                // 注意: onViewCreated は再呼び出しされる可能性があるため、既存ビューのチェックを入れると安全です
+                // 🔽 翻訳トグルボタン（重複追加防止）
                 if (linearLayout.findViewById<View>(buttonId) == null) {
+                    val entry = translatedMessages[messageId]
                     linearLayout.addView(TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                         id = buttonId
                         text = when {
@@ -126,7 +119,7 @@ class TranslatePlugin : Plugin() {
                     })
                 }
 
-                // 🔽 全体翻訳トグルボタン
+                // 🔽 全体翻訳トグルボタン（重複追加防止）
                 if (linearLayout.findViewById<View>(autoButtonId) == null) {
                     linearLayout.addView(TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                         id = autoButtonId
