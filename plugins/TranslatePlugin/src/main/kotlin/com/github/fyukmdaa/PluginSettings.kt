@@ -18,9 +18,7 @@ class PluginSettings(private val settings: SettingsAPI) : SettingsPage() {
         val ctx = view.context
 
         // 翻訳先言語
-        val langInput = TextInput(ctx).apply {
-            hint = "Target language code (ex. ja, en, zh-CN)"
-        }
+        val langInput = TextInput(ctx, "Target language code (ex. ja, en, zh-CN)")
         val langEditText = langInput.editText!!.apply {
             maxLines = 1
             setText(settings.getString("targetLang", "ja"))
