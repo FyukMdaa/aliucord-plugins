@@ -9,7 +9,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.widget.NestedScrollView
-import androidx.recyclerview.widget.RecyclerView
 import com.aliucord.Logger
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
@@ -65,41 +64,31 @@ class TranslatePlugin : Plugin() {
 
             // ── 0. 【修正】メッセージ表示時にテキストを書き換えるパッチ ─────────────────
             try {
-                // クラス名をStringで指定
                 val itemClassName = "com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage"
-                // メソッド名
                 val methodName = "onConfigure"
                 
-                patcher.patch(itemClassName, methodName, null, Hook { cf ->
+                // 【修正】 null の代わりに emptyArray<Class<*>>() を渡す
+                patcher.patch(itemClassName, methodName, emptyArray<Class<*>>(), Hook { cf ->
                     try {
-                        // 引数の0番目がMessageであることが多い
                         val message = cf.args[0] as? Message ?: return@Hook
                         
                         val entry = translatedMessages[message.id]
                         if (entry != null && entry.showingTranslation) {
-                            // ViewHolderからbindingを取得
-                            // クラス名が文字列なので、ここでリフレクションでクラスを取得する必要がある
                             val itemClass = Class.forName(itemClassName)
                             val bindingField = itemClass.getDeclaredField("binding").apply { isAccessible = true }
                             val binding = bindingField.get(cf.thisObject)
                             
-                            // bindingクラスもリフレクションで取得
                             val bindingClass = binding.javaClass
-                            
-                            // chatListContentViewフィールドを取得
                             val contentViewField = bindingClass.getDeclaredField("chatListContentView").apply { isAccessible = true }
                             val contentView = contentViewField.get(binding) as? View
                             
                             if (contentView != null) {
-                                // IDを動的に取得 (R.i は FlexInput のため使えない)
-                                // Discordのパッケージ "com.discord" からIDを探す
                                 val context = contentView.context
                                 val msgId = context.resources.getIdentifier("chat_list_item_message", "id", "com.discord")
                                 
                                 val textView = if (msgId != 0) {
                                     contentView.findViewById<TextView>(msgId)
                                 } else {
-                                    // IDが見つからない場合、ViewGroupの子を探索してTextViewを探す
                                     findTextView(contentView)
                                 }
 
@@ -109,7 +98,7 @@ class TranslatePlugin : Plugin() {
                             }
                         }
                     } catch (e: Exception) {
-                        // 個別のエラーは無視
+                        // エラー無視
                     }
                 })
                 logger.info("✅ Message rewrite patch applied")
@@ -246,10 +235,8 @@ class TranslatePlugin : Plugin() {
         patcher.unpatchAll()
     }
 
-    // ヘルパー: View階層を探索してTextViewを見つける
     private fun findTextView(view: View): TextView? {
         if (view is TextView) {
-            // IDが0（生成されたIDなど）でないTextViewを探す
             if (view.id != View.NO_ID) return view
         } else if (view is LinearLayout) {
             for (i in 0 until view.childCount) {
