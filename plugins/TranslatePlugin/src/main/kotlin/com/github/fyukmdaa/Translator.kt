@@ -3,6 +3,9 @@ package com.github.fyukmdaa
 import com.aliucord.Http
 import com.aliucord.Logger
 import java.net.URLEncoder
+// KotlinのRegexではなくJavaの正規表現ライブラリをインポート
+import java.util.regex.Pattern
+import java.util.regex.Matcher
 
 object Translator {
     private val logger = Logger("TranslatePlugin")
@@ -58,29 +61,28 @@ object Translator {
         val bodyPreview = if (body.length > 300) "${body.substring(0, 300)}..." else body
         logger.debug("[4/4] Response body: $bodyPreview")
 
-        // 【重要】JSONパースをやめて正規表現で抽出します
-        return parseResponseWithRegex(body)
+        return parseResponseWithJavaRegex(body)
     }
 
-    private fun parseResponseWithRegex(body: String): String {
+    // Java標準のPattern/Matcherを使用して、コンパイルエラーを回避します
+    private fun parseResponseWithJavaRegex(body: String): String {
         return try {
-            // Google Translateの形式: [[["翻訳テキスト", "元テキスト", ...], ...], ...]
-            // 「["」で始まり、「","」で終わる箇所を探す（＝各セグメントの先頭、つまり翻訳結果）
-            // エスケープされたクオーテーション(\"など)を考慮した正規表現
-            val regex = Regex("""\["((?:[^"\\]|\\.)*)",""")
-            
-            val matches = regex.findAll(body)
+            // パターン: ["で始まり、","で終わる箇所の最初のグループをキャプチャ
+            val pattern = Pattern.compile("""\["((?:[^"\\]|\\.)*)",""")
+
+            val matcher = pattern.matcher(body)
             val result = StringBuilder()
-            
             var count = 0
-            for (match in matches) {
-                // group(1) がキャプチャされた翻訳テキスト
-                val translatedPart = match.groupValues[1]
-                // エスケープシーケンスをデコード (\" -> ", \/ -> /, \\ -> \ など)
-                val unescapedPart = unescapeJsonString(translatedPart)
-                
-                result.append(unescapedPart)
-                count++
+
+            // Matcherを使ってループ
+            while (matcher.find()) {
+                // グループ1が翻訳テキスト
+                val translatedPart = matcher.group(1)
+                if (translatedPart != null) {
+                    val unescapedPart = unescapeJsonString(translatedPart)
+                    result.append(unescapedPart)
+                    count++
+                }
             }
             
             if (count == 0) {
@@ -90,7 +92,7 @@ object Translator {
             
             val finalResult = result.toString()
             val resultPreview = if (finalResult.length > 100) "${finalResult.substring(0, 100)}..." else finalResult
-            logger.info("[PARSE] success (Regex): $resultPreview")
+            logger.info("[PARSE] success (Java Regex): $resultPreview")
             
             finalResult
         } catch (e: Exception) {
@@ -99,7 +101,6 @@ object Translator {
         }
     }
 
-    // JSON文字列内のエスケープを解除する簡易ヘルパー
     private fun unescapeJsonString(str: String): String {
         return str
             .replace("\\\"", "\"")  // クオーテーション
