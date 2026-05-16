@@ -14,6 +14,7 @@ import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
 import com.discord.databinding.WidgetChatListActionsBinding
+import com.discord.models.message.Message
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
 import com.lytefast.flexinput.R
 
@@ -29,11 +30,11 @@ class TranslatePlugin : Plugin() {
         val translated: String,
         var showingTranslation: Boolean = true
     )
+    // messageId -> Entry
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
     private val autoChannels = mutableSetOf<Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
     
-    // Contextは start() で受け取るものの、UI表示には menu.requireContext() を使うのでここでは保持しなくても良いが、念のため
     private lateinit var safeContext: Context
 
     private fun targetLang() = settings.getString("targetLang", "ja")
@@ -60,6 +61,48 @@ class TranslatePlugin : Plugin() {
             } catch (e: Exception) {
                 logger.error("❌ getBinding method not found", e)
                 return
+            }
+
+            // ── 0. 【新機能】メッセージ表示時にテキストを書き換えるパッチ ─────────────────
+            try {
+                // チャットリストのアイテム（1行1メッセージ）のクラス
+                val itemClass = Class.forName("com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage")
+                // バインディングクラス
+                val bindingClass = Class.forName("com.discord.databinding.WidgetChatListItemMessageBinding")
+
+                patcher.patch(itemClass, "onConfigure", null, Hook { cf ->
+                    try {
+                        // メッセージオブジェクトを取得
+                        val message = cf.args[0] as? Message ?: return@Hook
+                        
+                        // 翻訳済みデータがあるか確認
+                        val entry = translatedMessages[message.id]
+                        if (entry != null && entry.showingTranslation) {
+                            // バインディングを取得
+                            val bindingField = itemClass.getDeclaredField("binding").apply { isAccessible = true }
+                            val binding = bindingField.get(cf.thisObject)
+                            
+                            // バインディングからテキストビューを探す
+                            // chatListContentView はメッセージ内容を含むビュー
+                            val contentViewField = bindingClass.getDeclaredField("chatListContentView").apply { isAccessible = true }
+                            val contentView = contentViewField.get(binding) as? View
+                            
+                            if (contentView != null) {
+                                // R.i.chat_list_item_message はメッセージ本文のTextViewのID
+                                val textView = contentView.findViewById<TextView>(R.i.chat_list_item_message)
+                                if (textView != null) {
+                                    textView.text = entry.translated
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // 個別のエラーは無視してログだけ出す（クラッシュ防止）
+                        // logger.error("Error in message rewrite", null) 
+                    }
+                })
+                logger.info("✅ Message rewrite patch applied")
+            } catch (e: Exception) {
+                logger.error("❌ Failed to apply message rewrite patch", e)
             }
 
             // ── 1. configureUI Patch ───────────────────────────────
@@ -99,9 +142,16 @@ class TranslatePlugin : Plugin() {
                                             translatedMessages[message.id] = TranslatedEntry(content, result)
                                             mainHandler.post {
                                                 logger.info("Translation success for msg ${message.id}")
-                                                // 【重要】ここで menu.requireContext() を渡す
-                                                showTranslation(menu.requireContext(), content, result)
+                                                // ダイアログは出さず、トーストだけ出す
+                                                Toast.makeText(menu.requireContext(), "Message Translated!", Toast.LENGTH_SHORT).show()
                                                 menu.dismiss()
+                                                
+                                                // チャット画面を強制リロードして書き換えを反映させる
+                                                // リストをスクロールさせるなどして再描画を促すのが理想だが、
+                                                // 簡易的にユーザーに少しスクロールしてもらうか、
+                                                // もし可能なら adapter.notifyDataSetChanged() を叩きたいが
+                                                // ここでは安全策としてトーストのみ。
+                                                // (メッセージをスクロールして再表示させると翻訳が見えます)
                                             }
                                         }
                                     } catch (e: Exception) {
@@ -112,10 +162,12 @@ class TranslatePlugin : Plugin() {
                                     }
                                 }.start()
                             } else {
+                                // すでに翻訳済みの場合、オリジナルとトグルする
                                 entry.showingTranslation = !entry.showingTranslation
-                                // ここも menu.requireContext() を使う
-                                showTranslation(menu.requireContext(), entry.original, entry.translated)
+                                Toast.makeText(menu.requireContext(), if(entry.showingTranslation) "Showing Translation" else "Showing Original", Toast.LENGTH_SHORT).show()
                                 menu.dismiss()
+                                // 再描画させるために何らかのアクションが必要だが、
+                                // 手軽な方法としてユーザーがスクロールすると反映される。
                             }
                         }
 
@@ -137,7 +189,7 @@ class TranslatePlugin : Plugin() {
                 logger.error("Failed to patch configureUI", e)
             }
 
-            // ── 2. onViewCreated Patch ─────────────────────────
+            // ── 2. onViewCreated Patch (ボタン表示) ─────────────────────────
             try {
                 patcher.patch(
                     messageContextMenu,
@@ -193,6 +245,7 @@ class TranslatePlugin : Plugin() {
         patcher.unpatchAll()
     }
 
+    // 今はダイアログを使わないのでこのメソッドは不要ですが、一応残しておきます
     private fun showTranslation(ctx: Context, original: String, translated: String) {
         try {
             android.app.AlertDialog.Builder(ctx)
@@ -201,9 +254,7 @@ class TranslatePlugin : Plugin() {
                 .setPositiveButton("Close", null)
                 .show()
         } catch (e: Exception) {
-            // エラーの詳細をログに出す（例外オブジェクトは渡さない）
-            logger.error("Failed to show dialog: ${e.javaClass.simpleName} - ${e.message}", null)
-            Toast.makeText(ctx, "Translated (See Log)", Toast.LENGTH_SHORT).show()
+            logger.error("Failed to show dialog: ${e.javaClass.simpleName}", null)
         }
     }
 }
