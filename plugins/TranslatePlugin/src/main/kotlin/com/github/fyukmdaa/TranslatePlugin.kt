@@ -32,8 +32,7 @@ class TranslatePlugin : Plugin() {
     private fun targetLang() = settings.getString("targetLang", "ja")
 
     override fun start(ctx: Context) {
-        // ✅ 継承された logger を使用
-        logger.info("▶️ start() called")
+        logger.info("start() called")
         
         val buttonId = View.generateViewId()
         val autoButtonId = View.generateViewId()
@@ -44,32 +43,32 @@ class TranslatePlugin : Plugin() {
         val getBinding = try {
             messageContextMenu.getDeclaredMethod("getBinding").apply { isAccessible = true }
         } catch (e: Exception) {
-            logger.error("❌ getBinding method not found", e)
+            logger.error("getBinding method not found", e)
             return
         }
 
         // ── 1. configureUI: click listeners ───────────────────────────────
-        logger.info("🔧 Patching configureUI")
+        logger.info("Patching configureUI")
         patcher.patch(
             messageContextMenu.getDeclaredMethod("configureUI", WidgetChatListActions.Model::class.java),
             Hook { cf ->
-                logger.debug("⚡ configureUI hook")
+                logger.debug("configureUI hook")
                 
                 val menu = cf.thisObject as WidgetChatListActions
                 val binding = try {
                     getBinding.invoke(menu) as WidgetChatListActionsBinding
                 } catch (e: Exception) {
-                    logger.error("❌ getBinding invoke failed", e)
+                    logger.error("getBinding invoke failed", e)
                     return@Hook
                 }
                 val model = cf.args[0] as? WidgetChatListActions.Model ?: return@Hook
                 val message = model.message
                 
-                logger.debug("📨 message.id=${message.id}, channelId=${message.channelId}")
+                logger.debug("message.id=${message.id}, channelId=${message.channelId}")
 
-                // 🔹 翻訳ボタン
+                // 🔹 Translate Button
                 binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
-                    logger.info("🖱️ Translate button clicked")
+                    logger.info("Translate button clicked")
                     val entry = translatedMessages[message.id]
                     if (entry == null) {
                         Utils.threadPool.execute {
@@ -83,7 +82,7 @@ class TranslatePlugin : Plugin() {
                                     menu.dismiss()
                                 }
                             } catch (e: Exception) {
-                                logger.error("❌ Translation failed", e)
+                                logger.error("Translation failed", e)
                                 Utils.mainThread.post { Utils.showToast("Error: ${e.message}") }
                             }
                         }
@@ -94,15 +93,15 @@ class TranslatePlugin : Plugin() {
                     }
                 }
 
-                // 🔹 全体翻訳ボタン
+                // 🔹 Auto-Translate Button
                 binding.a.findViewById<TextView>(autoButtonId)?.setOnClickListener {
-                    logger.info("🖱️ Auto-translate button clicked, channelId=${message.channelId}")
+                    logger.info("Auto-translate button clicked, channelId=${message.channelId}")
                     if (message.channelId in autoChannels) {
                         autoChannels.remove(message.channelId)
-                        Utils.showToast("全体翻訳 OFF")
+                        Utils.showToast("Auto-Translate OFF")
                     } else {
                         autoChannels.add(message.channelId)
-                        Utils.showToast("全体翻訳 ON")
+                        Utils.showToast("Auto-Translate ON")
                     }
                     menu.dismiss()
                 }
@@ -110,35 +109,35 @@ class TranslatePlugin : Plugin() {
         )
 
         // ── 2. onViewCreated: add buttons to view ─────────────────────────
-        logger.info("🔧 Patching onViewCreated")
+        logger.info("Patching onViewCreated")
         patcher.patch(
             messageContextMenu,
             "onViewCreated",
             arrayOf(View::class.java, Bundle::class.java),
             Hook { cf ->
-                logger.debug("⚡ onViewCreated hook")
+                logger.debug("onViewCreated hook")
                 
                 val linearLayout = (cf.args[0] as? NestedScrollView)?.getChildAt(0) as? LinearLayout
                     ?: return@Hook
                 val ctx2 = linearLayout.context
 
-                // 🔹 messageId (required)
+                // 🔹 messageId
                 val messageId = try {
                     WidgetChatListActions.`access$getMessageId$p`(cf.thisObject as WidgetChatListActions)
                 } catch (e: Throwable) {
-                    logger.error("❌ Cannot access messageId", e)
+                    logger.error("Cannot access messageId", e)
                     return@Hook
                 }
 
-                // 🔹 channelId (optional, fallback to 0L)
+                // 🔹 channelId
                 val channelId = try {
                     WidgetChatListActions.`access$getChannelId$p`(cf.thisObject as WidgetChatListActions)
                 } catch (e: Throwable) {
-                    logger.warn("⚠️ Cannot access channelId, using 0L")
+                    logger.warn("Cannot access channelId, using 0L")
                     0L
                 }
 
-                // 🔹 翻訳ボタン（重複防止）
+                // 🔹 Translate Button
                 val translateBtn = linearLayout.findViewById<TextView>(buttonId)
                     ?: TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                         id = buttonId
@@ -146,34 +145,34 @@ class TranslatePlugin : Plugin() {
                     }
                 val entry = translatedMessages[messageId]
                 translateBtn.text = when {
-                    entry == null -> "🌐 翻訳"
-                    entry.showingTranslation -> "🌐 原文を表示"
-                    else -> "🌐 訳文を表示"
+                    entry == null -> "Translate"
+                    entry.showingTranslation -> "Show Original"
+                    else -> "Show Translation"
                 }
 
-                // 🔹 全体翻訳ボタン（重複防止）
+                // 🔹 Auto-Translate Button
                 val autoBtn = linearLayout.findViewById<TextView>(autoButtonId)
                     ?: TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                         id = autoButtonId
                         linearLayout.addView(this)
                     }
-                autoBtn.text = if (channelId in autoChannels) "🌐 全体翻訳 OFF" else "🌐 全体翻訳 ON"
+                autoBtn.text = if (channelId in autoChannels) "Auto-Translate OFF" else "Auto-Translate ON"
             }
         )
         
-        logger.info("✅ start() done")
+        logger.info("start() done")
     }
 
     override fun stop(ctx: Context) {
-        logger.info("⏹️ stop() called")
+        logger.info("stop() called")
         patcher.unpatchAll()
     }
 
     private fun showTranslation(ctx: Context, original: String, translated: String) {
         android.app.AlertDialog.Builder(ctx)
-            .setTitle("翻訳")
+            .setTitle("Translation")
             .setMessage("$original\n\n---\n\n$translated")
-            .setPositiveButton("閉じる", null)
+            .setPositiveButton("Close", null)
             .show()
     }
 }
