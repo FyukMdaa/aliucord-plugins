@@ -1,5 +1,5 @@
 version = "1.0.0" // Plugin version. Increment this to trigger an update
-description = "My first Kotlin plugin!" // Plugin description that will be shown to user
+description = "translate messages or sarver" // Plugin description that will be shown to user
 
 aliucord {
     // Changelog of your plugin
