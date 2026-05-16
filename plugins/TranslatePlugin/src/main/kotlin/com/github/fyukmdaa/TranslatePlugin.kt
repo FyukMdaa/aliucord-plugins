@@ -37,6 +37,16 @@ class TranslatePlugin : Plugin() {
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
+    // 【修正】isBlank() の代わりに使う安全な関数（イテレータを使わない）
+    private fun isBlankSafe(str: String): Boolean {
+        if (str.isEmpty()) return true
+        // インデックスループで1文字ずつチェック
+        for (i in 0 until str.length) {
+            if (!str[i].isWhitespace()) return false
+        }
+        return true
+    }
+
     override fun start(ctx: Context) {
         try {
             safeContext = ctx
@@ -46,7 +56,6 @@ class TranslatePlugin : Plugin() {
             val autoButtonId = View.generateViewId()
             val messageContextMenu = WidgetChatListActions::class.java
             
-            // ── 安全なメソッド取得 ───────────────────────────────
             val getBinding = try {
                 messageContextMenu.getDeclaredMethod("getBinding").apply { isAccessible = true }
             } catch (e: Exception) {
@@ -56,11 +65,10 @@ class TranslatePlugin : Plugin() {
 
             // ── 1. configureUI Patch ───────────────────────────────
             try {
-                // メソッドが存在するか確認しつつパッチ
                 val configureMethod = try {
                     messageContextMenu.getDeclaredMethod("configureUI", WidgetChatListActions.Model::class.java)
                 } catch (e: NoSuchMethodException) {
-                    logger.error("❌ configureUI method not found. Plugin may not work on this Discord version.", e)
+                    logger.error("❌ configureUI method not found.", e)
                     return
                 }
 
@@ -78,16 +86,18 @@ class TranslatePlugin : Plugin() {
                         binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
                             val entry = translatedMessages[message.id]
                             if (entry == null) {
-                                // メインスレッドで安全にデータを確保
                                 val rawContent = message.content
                                 val content = if (rawContent is String) rawContent else rawContent?.toString() ?: return@setOnClickListener
-                                if (content.isBlank()) return@setOnClickListener
+                                
+                                // 【修正】ここで isBlank() を使うとクラッシュするため、自作関数を使う
+                                if (isBlankSafe(content)) return@setOnClickListener
+                                
                                 val lang = targetLang()
 
                                 Thread {
                                     try {
                                         val result = Translator.translate(content, lang)
-                                        if (result.isNotBlank()) {
+                                        if (result.isNotEmpty()) { // ここも isBlank を避けて isNotEmpty に変更
                                             translatedMessages[message.id] = TranslatedEntry(content, result)
                                             mainHandler.post {
                                                 logger.info("Translation success for msg ${message.id}")
@@ -97,7 +107,7 @@ class TranslatePlugin : Plugin() {
                                         }
                                     } catch (e: Exception) {
                                         mainHandler.post { 
-                                            logger.error("Translation error", e) // ここはeを渡しても安全（クラッシュ済みの後なので）
+                                            logger.error("Translation error", null)
                                             Toast.makeText(safeContext, "Translation Failed", Toast.LENGTH_SHORT).show() 
                                         }
                                     }
@@ -120,7 +130,7 @@ class TranslatePlugin : Plugin() {
                             menu.dismiss()
                         }
                     } catch (e: Exception) {
-                        logger.error("Error inside configureUI hook", e)
+                        logger.error("Error inside configureUI hook", null)
                     }
                 })
             } catch (e: Exception) {
@@ -154,9 +164,9 @@ class TranslatePlugin : Plugin() {
                                 }
                             val entry = translatedMessages[messageId]
                             translateBtn.text = when {
-                                entry == null -> "🌐 Translate"
-                                entry.showingTranslation -> "🌐 Show Original"
-                                else -> "🌐 Show Translation"
+                                entry == null -> "Translate Message"
+                                entry.showingTranslation -> "Show Original"
+                                else -> "Show Translation"
                             }
 
                             val autoBtn = linearLayout.findViewById<TextView>(autoButtonId)
@@ -164,9 +174,9 @@ class TranslatePlugin : Plugin() {
                                     id = autoButtonId
                                     linearLayout.addView(this)
                                 }
-                            autoBtn.text = if (channelId in autoChannels) "🌐 Auto-Translate OFF" else "🌐 Auto-Translate ON"
+                            autoBtn.text = if (channelId in autoChannels) "Auto-Translate OFF" else "Auto-Translate ON"
                         } catch (e: Exception) {
-                            logger.error("Error inside onViewCreated hook", e)
+                            logger.error("Error inside onViewCreated hook", null)
                         }
                     }
                 )
@@ -191,7 +201,7 @@ class TranslatePlugin : Plugin() {
                 .setPositiveButton("Close", null)
                 .show()
         } catch (e: Exception) {
-            logger.error("Failed to show dialog", e)
+            logger.error("Failed to show dialog", null)
             Toast.makeText(ctx, "Translated (Check Log)", Toast.LENGTH_SHORT).show()
         }
     }
