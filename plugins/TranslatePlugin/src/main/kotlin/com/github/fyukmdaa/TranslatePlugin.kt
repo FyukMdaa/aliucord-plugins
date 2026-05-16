@@ -13,12 +13,9 @@ import com.aliucord.patcher.Hook
 import com.discord.databinding.WidgetChatListActionsBinding
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
 import com.lytefast.flexinput.R
-import com.aliucord.Logger
 
 @AliucordPlugin
 class TranslatePlugin : Plugin() {
-    
-    private val logger = Logger("TranslatePlugin")
 
     init {
         settingsTab = SettingsTab(PluginSettings::class.java).withArgs(settings)
@@ -35,6 +32,7 @@ class TranslatePlugin : Plugin() {
     private fun targetLang() = settings.getString("targetLang", "ja")
 
     override fun start(ctx: Context) {
+        // ✅ 継承された logger を使用
         logger.info("▶️ start() called")
         
         val buttonId = View.generateViewId()
