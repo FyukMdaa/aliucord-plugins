@@ -65,45 +65,39 @@ class TranslatePlugin : Plugin() {
             }
 
             // ── 0. 【決定版】メッセージ書き換えパッチ ─────────────────────────────
+            // 【修正】変数のスコープを try の外に出す
+            val itemClassName = "com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage"
+            val messageClass = Class.forName("com.discord.models.message.Message")
+            
             try {
-                val itemClassName = "com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage"
-                val messageClass = Class.forName("com.discord.models.message.Message")
-                
-                // onConfigure(Message, Int, Boolean) などのシグネチャに対応するため、
-                // 引数の数や型を柔軟に扱う必要があるが、Aliucordのpatcherは正確な型を必要とする。
-                // 一般的なシグネチャ (Message, Int) を試す
+                // onConfigure(Message, Int, Boolean) などのシグネチャに対応
+                // 【修正】 Int::class.java (Integer) を使用して型エラーを回避
                 patcher.patch(
                     itemClassName, 
                     "onConfigure", 
-                    arrayOf<Class<*>>(messageClass, Int::class.javaPrimitiveType), 
+                    arrayOf<Class<*>>(messageClass, Int::class.java), 
                     Hook { cf ->
                         try {
                             val message = cf.args[0] as? Message ?: return@Hook
                             val entry = translatedMessages[message.id]
                             
                             if (entry != null && entry.showingTranslation) {
-                                // 【重要】ViewHolderからitemViewを取得する (Bindingフィールド名に依存しない)
-                                // RecyclerView.ViewHolder.itemView は親クラスのフィールドなので安全
                                 val viewHolder = cf.thisObject
                                 val itemViewField = RecyclerView.ViewHolder::class.java.getDeclaredField("itemView").apply { isAccessible = true }
                                 val itemView = itemViewField.get(viewHolder) as? View ?: return@Hook
 
-                                // 本文と一致するTextViewを探して書き換える
                                 replaceTextViewText(itemView, entry.original, entry.translated)
                             }
                         } catch (e: Exception) {
-                            // エラーはログに出すが、クラッシュはさせない
                             logger.error("Error in message rewrite hook: ${e.message}", null)
                         }
                     }
                 )
                 logger.info("✅ Message rewrite patch applied (Method: onConfigure)")
             } catch (e: Exception) {
-                // onConfigure(Message, Int) で失敗した場合、別のシグネチャを試すか諦める
                 logger.error("❌ Failed to patch onConfigure (maybe signature changed)", e)
-                // 念のため configure(Message) も試す
+                // フォールバック: configure(Message) を試す
                 try {
-                    val messageClass = Class.forName("com.discord.models.message.Message")
                     patcher.patch(
                         itemClassName, 
                         "configure", 
@@ -261,14 +255,11 @@ class TranslatePlugin : Plugin() {
     // 【改善】原文と一致するTextViewを探して置換する関数
     private fun replaceTextViewText(view: View, original: String, translated: String) {
         if (view is TextView) {
-            // TextViewなら内容を比較
-            // Markdown等が含まれていても toString() で平文になるので比較可能
             if (view.text.toString() == original) {
                 view.text = translated
                 return
             }
         } else if (view is ViewGroup) {
-            // ViewGroupなら再帰的に子を探索
             for (i in 0 until view.childCount) {
                 replaceTextViewText(view.getChildAt(i), original, translated)
             }
