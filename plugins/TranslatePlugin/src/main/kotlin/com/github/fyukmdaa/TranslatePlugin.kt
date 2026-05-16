@@ -1,7 +1,6 @@
 package com.fyukmdaa.translateplugin
 
 import android.content.Context
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.app.AlertDialog
@@ -10,12 +9,12 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
-import com.aliucord.utils.DimenUtils
+import com.aliucord.utils.DimenUtils.dp
 import com.discord.models.message.Message
-import com.discord.stores.StoreStream
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
 
 @AliucordPlugin
@@ -25,91 +24,57 @@ class TranslatePlugin : Plugin() {
         settingsTab = SettingsTab(PluginSettings::class.java).withArgs(settings)
     }
 
+    // チャンネルIDごとの全体翻訳ON状態
     private val autoChannels = mutableSetOf<Long>()
 
-    private fun getTargetLang(): String = settings.getString("targetLang", "ja")
+    private fun targetLang() = settings.getString("targetLang", "ja")
 
     override fun start(ctx: Context) {
 
-        // ── 1. メッセージ長押しメニューに「翻訳」「全体翻訳」を追加 ──
-        val onViewCreated = WidgetChatListActions::class.java.getDeclaredMethod(
-            "onViewCreated", View::class.java, Bundle::class.java
-        )
+        // WidgetChatListActions が表示されたときにボタンを追加
+        patcher.patch(
+            WidgetChatListActions::class.java,
+            "onViewCreated",
+            arrayOf(View::class.java, android.os.Bundle::class.java),
+            Hook { cf ->
+                val actions = cf.thisObject as WidgetChatListActions
 
-        patcher.patch(onViewCreated, Hook { cf ->
-            val actions = cf.thisObject as WidgetChatListActions
-        
-            val messageField = WidgetChatListActions::class.java
-                .declaredFields
-                .firstOrNull { it.type == Message::class.java }
-                ?: return@Hook
-            messageField.isAccessible = true
-            val message = messageField.get(actions) as? Message ?: return@Hook
-        
-            val layout = actions.requireView() as? ViewGroup ?: return@Hook
-        
-            val channelId = message.channelId
-        
-            addActionButton(layout, actions.requireContext(), "Translate message") {
+                // messageフィールドをリフレクションで取得（型で検索）
+                val message = WidgetChatListActions::class.java.declaredFields
+                    .firstOrNull { it.type == Message::class.java }
+                    ?.also { it.isAccessible = true }
+                    ?.get(actions) as? Message ?: return@Hook
+
                 val content = message.content
-                if (content.isNullOrBlank()) return@addActionButton
-                translateAndShow(actions.requireContext(), content, getTargetLang())
-                actions.dismiss()
-            }
-        
-            val autoLabel = if (channelId in autoChannels) "Disable Full Translation" else "Enable Full Translation"
-            addActionButton(layout, actions.requireContext(), autoLabel) {
-                if (channelId in autoChannels) {
-                    autoChannels.remove(channelId)
-                    Toast.makeText(actions.requireContext(), "Disabled full translation", Toast.LENGTH_SHORT).show()
-                } else {
-                    autoChannels.add(channelId)
-                    Toast.makeText(actions.requireContext(), "Enabled full translation", Toast.LENGTH_SHORT).show()
-                }
-                actions.dismiss()
-            }
-        })
+                if (content.isNullOrBlank()) return@Hook
 
-        // ── 2. 全体翻訳モード: メッセージのテキストViewに訳文を追加 ──
-        val bindMethod = com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage::class.java
-            .declaredMethods
-            .firstOrNull { it.name == "onConfigure" }
-            ?: return
+                val channelId = message.channelId
 
-        patcher.patch(bindMethod, Hook { cf ->
-            val currentChannelId = try {
-                StoreStream.getChannelsSelected().id
-            } catch (_: Exception) {
-                return@Hook
-            }
-            if (currentChannelId !in autoChannels) return@Hook
+                // ボタンを追加するコンテナを取得
+                // WidgetChatListActions のビューは ScrollView > LinearLayout 構造
+                val rootView = actions.requireView() as? ViewGroup ?: return@Hook
+                val container = findLinearLayout(rootView) ?: rootView
 
-            // エントリからMessageを取得
-            val entry = cf.args.getOrNull(1) ?: return@Hook
-            val messageField = entry.javaClass.declaredFields
-                .firstOrNull { it.type == Message::class.java }
-                ?: return@Hook
-            messageField.isAccessible = true
-            val message = messageField.get(entry) as? Message ?: return@Hook
+                // 「翻訳」ボタン追加
+                container.addView(makeButton(ctx, "Translate message") {
+                    actions.dismiss()
+                    translateAndShow(ctx, content, targetLang())
+                })
 
-            val original = message.content
-            if (original.isNullOrBlank()) return@Hook
-            if (original.contains("\n---\n")) return@Hook  // 翻訳済みスキップ
-
-            val itemView = cf.thisObject as? View ?: return@Hook
-
-            Thread {
-                try {
-                    val translated = Translator.translate(original, getTargetLang())
-                    if (translated.isBlank() || translated == original) return@Thread
-                    Handler(Looper.getMainLooper()).post {
-                        // テキストViewを探して書き換え
-                        val textView = findTextView(itemView, original) ?: return@post
-                        textView.text = "$original\n---\n$translated"
+                // 「全体翻訳 ON/OFF」ボタン追加
+                val isAuto = channelId in autoChannels
+                container.addView(makeButton(ctx, if (isAuto) "Disable Full Translate" else "Enable Full Translate") {
+                    if (channelId in autoChannels) {
+                        autoChannels.remove(channelId)
+                        Utils.showToast("Disabled Full Translate")
+                    } else {
+                        autoChannels.add(channelId)
+                        Utils.showToast("Enabled Full Translate")
                     }
-                } catch (_: Exception) {}
-            }.start()
-        })
+                    actions.dismiss()
+                })
+            }
+        )
     }
 
     override fun stop(ctx: Context) = patcher.unpatchAll()
@@ -124,39 +89,32 @@ class TranslatePlugin : Plugin() {
                     AlertDialog.Builder(ctx)
                         .setTitle("Translate")
                         .setMessage("$text\n\n---\n\n$translated")
-                        .setPositiveButton("Close", null)
+                        .setPositiveButton("close", null)
                         .show()
                 }
             } catch (e: Exception) {
                 Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(ctx, "Translate error: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Utils.showToast("Translate error: ${e.message}")
                 }
             }
         }.start()
     }
 
-    private fun addActionButton(
-        layout: ViewGroup,
-        ctx: Context,
-        label: String,
-        onClick: () -> Unit
-    ) {
-        layout.addView(TextView(ctx).apply {
+    private fun makeButton(ctx: Context, label: String, onClick: () -> Unit): TextView {
+        return TextView(ctx, null, 0, com.google.android.material.R.style.Widget_MaterialComponents_Button_TextButton).apply {
             text = label
-            textSize = 16f
-            val p = DimenUtils.dpToPx(16)
+            val p = 16.dp
             setPadding(p, p, p, p)
             setOnClickListener { onClick() }
-        })
+        }
     }
 
-    /** ViewGroupを再帰的に探索し、指定テキストを持つTextViewを返す */
-    private fun findTextView(view: View, text: String): TextView? {
-        if (view is TextView && view.text.toString() == text) return view
-        if (view is ViewGroup) {
-            for (i in 0 until view.childCount) {
-                findTextView(view.getChildAt(i), text)?.let { return it }
-            }
+    /** ViewGroupを再帰的に探索して最初のLinearLayoutを返す */
+    private fun findLinearLayout(view: ViewGroup): LinearLayout? {
+        for (i in 0 until view.childCount) {
+            val child = view.getChildAt(i)
+            if (child is LinearLayout) return child
+            if (child is ViewGroup) findLinearLayout(child)?.let { return it }
         }
         return null
     }

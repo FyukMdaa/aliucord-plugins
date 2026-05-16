@@ -1,55 +1,56 @@
 package com.fyukmdaa.translateplugin
 
 import android.annotation.SuppressLint
-import android.content.Context
+import android.view.View
 import android.widget.*
 import com.aliucord.api.SettingsAPI
+import com.aliucord.fragments.SettingsPage
 import com.aliucord.views.Divider
-import com.discord.app.AppFragment
+import com.aliucord.views.TextInput
 
-class PluginSettings(private val settings: SettingsAPI) : AppFragment() {
+class PluginSettings(private val settings: SettingsAPI) : SettingsPage() {
 
     @SuppressLint("SetTextI18n")
-    override fun onViewCreated(view: android.view.View, savedInstanceState: android.os.Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-        val ctx = requireContext()
-        val layout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
-        }
+    override fun onViewBound(view: View) {
+        super.onViewBound(view)
+        setActionBarTitle("TranslatePlugin")
 
-        // 対象言語
-        layout.addView(TextView(ctx).apply { text = "Target language code (ex: ja, en, zh-CN)" })
-        val langInput = EditText(ctx).apply {
+        val ctx = view.context
+
+        // 翻訳先言語
+        val langInput = TextInput(ctx).apply {
+            hint = "Target language code (ex. ja, en, zh-CN)"
+        }
+        val langEditText = langInput.editText!!.apply {
+            maxLines = 1
             setText(settings.getString("targetLang", "ja"))
         }
-        layout.addView(langInput)
+        addView(langInput)
 
-        layout.addView(Divider(ctx))
+        addView(Divider(ctx))
 
-        // 全体翻訳モード
-        layout.addView(TextView(ctx).apply { text = "Full Translate for channel" })
+        // 全体翻訳モードのデフォルト
         val autoSwitch = Switch(ctx).apply {
-            text = "Enable"
+            text = "Enable full translation by default"
             isChecked = settings.getBool("autoTranslate", false)
             setOnCheckedChangeListener { _, checked ->
                 settings.setBool("autoTranslate", checked)
             }
         }
-        layout.addView(autoSwitch)
+        addView(autoSwitch)
+
+        addView(Divider(ctx))
 
         // 保存ボタン
-        layout.addView(Button(ctx).apply {
+        addView(Button(ctx).apply {
             text = "Save"
             setOnClickListener {
-                settings.setString("targetLang", langInput.text.toString().trim())
-                Toast.makeText(ctx, "Saved", Toast.LENGTH_SHORT).show()
+                val lang = langEditText.text.toString().trim()
+                if (lang.isNotEmpty()) {
+                    settings.setString("targetLang", lang)
+                    Toast.makeText(ctx, "Saved", Toast.LENGTH_SHORT).show()
+                }
             }
         })
-
-        // ScrollView に包んでセット
-        val scroll = ScrollView(ctx).apply { addView(layout) }
-        (view as? FrameLayout)?.addView(scroll)
-            ?: (view as? LinearLayout)?.addView(scroll)
     }
 }
