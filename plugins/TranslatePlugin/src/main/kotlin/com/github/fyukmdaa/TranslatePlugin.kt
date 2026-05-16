@@ -1,21 +1,18 @@
 package com.fyukmdaa.translateplugin
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
-import android.app.AlertDialog
+import android.os.Bundle
 import android.view.View
-import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
+import androidx.core.widget.NestedScrollView
 import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
-import com.aliucord.utils.DimenUtils.dp
-import com.discord.models.message.Message
+import com.discord.databinding.WidgetChatListActionsBinding
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
+import com.lytefast.flexinput.R
 
 @AliucordPlugin
 class TranslatePlugin : Plugin() {
@@ -24,46 +21,67 @@ class TranslatePlugin : Plugin() {
         settingsTab = SettingsTab(PluginSettings::class.java).withArgs(settings)
     }
 
+    // messageId -> 翻訳済みデータ
+    private data class TranslatedEntry(
+        val original: String,
+        val translated: String,
+        var showingTranslation: Boolean = true
+    )
+    private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
+
     // チャンネルIDごとの全体翻訳ON状態
     private val autoChannels = mutableSetOf<Long>()
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
     override fun start(ctx: Context) {
+        val buttonId = View.generateViewId()
+        val autoButtonId = View.generateViewId()
 
-        // WidgetChatListActions が表示されたときにボタンを追加
+        val messageContextMenu = WidgetChatListActions::class.java
+        val getBinding = messageContextMenu
+            .getDeclaredMethod("getBinding")
+            .apply { isAccessible = true }
+
+        // ── 1. ボタンのクリックリスナーを設定 ──────────────────────────
         patcher.patch(
-            WidgetChatListActions::class.java,
-            "onViewCreated",
-            arrayOf(View::class.java, android.os.Bundle::class.java),
+            messageContextMenu.getDeclaredMethod("configureUI", WidgetChatListActions.Model::class.java),
             Hook { cf ->
-                val actions = cf.thisObject as WidgetChatListActions
+                val menu = cf.thisObject as WidgetChatListActions
+                val binding = getBinding.invoke(menu) as WidgetChatListActionsBinding
+                val message = (cf.args[0] as WidgetChatListActions.Model).message
 
-                // messageフィールドをリフレクションで取得（型で検索）
-                val message = WidgetChatListActions::class.java.declaredFields
-                    .firstOrNull { it.type == Message::class.java }
-                    ?.also { it.isAccessible = true }
-                    ?.get(actions) as? Message ?: return@Hook
+                // 翻訳ボタン
+                binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
+                    val entry = translatedMessages[message.id]
+                    if (entry == null) {
+                        // 未翻訳 → 翻訳してrerenderは今回はダイアログ表示
+                        Utils.threadPool.execute {
+                            val result = Translator.translate(message.content ?: return@execute, targetLang())
+                            if (result.isBlank()) return@execute
+                            translatedMessages[message.id] = TranslatedEntry(
+                                original = message.content ?: "",
+                                translated = result
+                            )
+                            Utils.mainThread.post {
+                                showTranslation(menu.requireContext(), message.content ?: "", result)
+                                menu.dismiss()
+                            }
+                        }
+                    } else {
+                        // 翻訳済み → 原文/訳文を切り替えてダイアログ表示
+                        entry.showingTranslation = !entry.showingTranslation
+                        val display = if (entry.showingTranslation)
+                            "${entry.original}\n\n---\n\n${entry.translated}"
+                        else entry.original
+                        showTranslation(menu.requireContext(), entry.original, entry.translated)
+                        menu.dismiss()
+                    }
+                }
 
-                val content = message.content
-                if (content.isNullOrBlank()) return@Hook
-
+                // 全体翻訳ボタン
                 val channelId = message.channelId
-
-                // ボタンを追加するコンテナを取得
-                // WidgetChatListActions のビューは ScrollView > LinearLayout 構造
-                val rootView = actions.requireView() as? ViewGroup ?: return@Hook
-                val container = findLinearLayout(rootView) ?: rootView
-
-                // 「翻訳」ボタン追加
-                container.addView(makeButton(ctx, "Translate message") {
-                    actions.dismiss()
-                    translateAndShow(ctx, content, targetLang())
-                })
-
-                // 「全体翻訳 ON/OFF」ボタン追加
-                val isAuto = channelId in autoChannels
-                container.addView(makeButton(ctx, if (isAuto) "Disable Full Translate" else "Enable Full Translate") {
+                binding.a.findViewById<TextView>(autoButtonId)?.setOnClickListener {
                     if (channelId in autoChannels) {
                         autoChannels.remove(channelId)
                         Utils.showToast("Disabled Full Translate")
@@ -71,7 +89,43 @@ class TranslatePlugin : Plugin() {
                         autoChannels.add(channelId)
                         Utils.showToast("Enabled Full Translate")
                     }
-                    actions.dismiss()
+                    menu.dismiss()
+                }
+            }
+        )
+
+        // ── 2. ビューにボタンを追加 ────────────────────────────────────
+        patcher.patch(
+            messageContextMenu,
+            "onViewCreated",
+            arrayOf(View::class.java, Bundle::class.java),
+            Hook { cf ->
+                val linearLayout = (cf.args[0] as NestedScrollView).getChildAt(0) as LinearLayout
+                val ctx2 = linearLayout.context
+                val messageId = WidgetChatListActions.`access$getMessageId$p`(
+                    cf.thisObject as WidgetChatListActions
+                )
+                val channelId = try {
+                    WidgetChatListActions.`access$getChannelId$p`(
+                        cf.thisObject as WidgetChatListActions
+                    )
+                } catch (_: Throwable) { 0L }
+
+                // 翻訳ボタン
+                val entry = translatedMessages[messageId]
+                linearLayout.addView(TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
+                    id = buttonId
+                    text = when {
+                        entry == null -> "Translate message"
+                        entry.showingTranslation -> "Show Original"
+                        else -> "Show Translation"
+                    }
+                })
+
+                // 全体翻訳ボタン
+                linearLayout.addView(TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
+                    id = autoButtonId
+                    text = if (channelId in autoChannels) "Disable Full Translate" else "Enable Full Translate"
                 })
             }
         )
@@ -79,43 +133,11 @@ class TranslatePlugin : Plugin() {
 
     override fun stop(ctx: Context) = patcher.unpatchAll()
 
-    // ── ヘルパー ──────────────────────────────────────────────────────
-
-    private fun translateAndShow(ctx: Context, text: String, lang: String) {
-        Thread {
-            try {
-                val translated = Translator.translate(text, lang)
-                Handler(Looper.getMainLooper()).post {
-                    AlertDialog.Builder(ctx)
-                        .setTitle("Translate")
-                        .setMessage("$text\n\n---\n\n$translated")
-                        .setPositiveButton("close", null)
-                        .show()
-                }
-            } catch (e: Exception) {
-                Handler(Looper.getMainLooper()).post {
-                    Utils.showToast("Translate error: ${e.message}")
-                }
-            }
-        }.start()
-    }
-
-    private fun makeButton(ctx: Context, label: String, onClick: () -> Unit): TextView {
-        return TextView(ctx, null, 0, com.google.android.material.R.style.Widget_MaterialComponents_Button_TextButton).apply {
-            text = label
-            val p = 16.dp
-            setPadding(p, p, p, p)
-            setOnClickListener { onClick() }
-        }
-    }
-
-    /** ViewGroupを再帰的に探索して最初のLinearLayoutを返す */
-    private fun findLinearLayout(view: ViewGroup): LinearLayout? {
-        for (i in 0 until view.childCount) {
-            val child = view.getChildAt(i)
-            if (child is LinearLayout) return child
-            if (child is ViewGroup) findLinearLayout(child)?.let { return it }
-        }
-        return null
+    private fun showTranslation(ctx: Context, original: String, translated: String) {
+        android.app.AlertDialog.Builder(ctx)
+            .setTitle("Translate")
+            .setMessage("$original\n\n---\n\n$translated")
+            .setPositiveButton("close", null)
+            .show()
     }
 }

@@ -1,24 +1,31 @@
 package com.fyukmdaa.translateplugin
 
-import java.net.URL
-import java.net.URLEncoder
+import com.aliucord.Http
 import org.json.JSONArray
 
 object Translator {
     fun translate(text: String, targetLang: String = "ja"): String {
-        val encoded = URLEncoder.encode(text, "UTF-8")
-        val url = "https://translate.googleapis.com/translate_a/single" +
-            "?client=gtx&sl=auto&tl=$targetLang&dt=t&q=$encoded"
+        val url = Http.QueryBuilder("https://translate.googleapis.com/translate_a/single")
+            .append("client", "gtx")
+            .append("sl", "auto")
+            .append("tl", targetLang)
+            .append("dt", "t")
+            .append("q", text)
+            .toString()
 
-        val response = URL(url).readText()
-        val json = JSONArray(response)
-        val translations = json.getJSONArray(0)
+        val response = Http.Request(url, "GET").apply {
+            setHeader("Content-Type", "application/json")
+            setHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4592.0 Safari/537.36")
+        }.execute()
 
-        val sb = StringBuilder()
-        for (i in 0 until translations.length()) {
-            val part = translations.getJSONArray(i)
-            if (!part.isNull(0)) sb.append(part.getString(0))
+        if (!response.ok()) throw Exception("HTTP ${response.statusCode}")
+
+        val json = JSONArray(response.text())
+        val sections = json.getJSONArray(0)
+        return buildString {
+            for (i in 0 until sections.length()) {
+                append(sections.getJSONArray(i).getString(0))
+            }
         }
-        return sb.toString()
     }
 }
