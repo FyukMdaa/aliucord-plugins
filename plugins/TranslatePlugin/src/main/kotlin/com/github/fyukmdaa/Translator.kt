@@ -8,96 +8,101 @@ import java.net.URLEncoder
 object Translator {
     private val logger = Logger("TranslatePlugin")
 
-    fun translate(text: String, targetLang: String = "ja"): String {
-        logger.info("【1/4】翻訳開始: text='${text.take(50)}...', lang=$targetLang")
+    fun translate(text: String, targetLang: String): String {
+        // 🔧 文字列テンプレート不使用: 安全な連結のみ
+        val textPreview = if (text.length > 50) text.substring(0, 50) + "..." else text
+        logger.info("[1/4] translate start. text=" + textPreview + ", lang=" + targetLang)
 
-        // ── URL エンコード ───────────────────────────────────────
-        val encodedText = try {
-            URLEncoder.encode(text, "UTF-8")
+        // URL エンコード
+        val encodedText: String
+        try {
+            encodedText = URLEncoder.encode(text, "UTF-8")
         } catch (e: Exception) {
-            logger.error("【ERR】URL encode failed: ${e.message}", e)
+            logger.error("URL encode failed: " + e.message, e)
             throw RuntimeException("URL encode error", e)
         }
         
+        // 🔧 URL 構築も連結で
         val url = "https://translate.googleapis.com/translate_a/single" +
-                "?client=gtx&sl=auto&tl=$targetLang&dt=t&q=$encodedText"
+                "?client=gtx" +
+                "&sl=auto" +
+                "&tl=" + targetLang +
+                "&dt=t" +
+                "&q=" + encodedText
         
-        logger.debug("【2/4】Request URL: $url")
+        logger.debug("[2/4] Request URL: " + url)
 
-        // ── HTTP リクエスト（タイムアウト明示） ─────────────────────
-        val response = try {
-            Http.Request(url, "GET").apply {
+        // HTTP リクエスト
+        val response: Http.Response
+        try {
+            response = Http.Request(url, "GET").apply {
                 setHeader("User-Agent", "Mozilla/5.0")
-                // 🔧 Aliucord Http.Request にタイムアウト設定があれば追加
-                // setTimeout(10_000)  // 10秒タイムアウト（API に応じて調整）
             }.execute()
         } catch (e: Exception) {
-            logger.error("【ERR】HTTP execute failed: ${e.message}", e)
-            throw RuntimeException("HTTP request failed: ${e.message}", e)
+            logger.error("HTTP execute failed: " + e.message, e)
+            throw RuntimeException("HTTP request failed: " + e.message, e)
         }
 
-        logger.debug("【3/4】HTTP status: ${response.statusCode}, ok=${response.ok()}")
+        logger.debug("[3/4] HTTP status: " + response.statusCode + ", ok=" + response.ok())
 
         if (!response.ok()) {
-            val bodyPreview = try { response.text().take(200) } catch (_: Exception) { "(read failed)" }
-            val msg = "HTTP ${response.statusCode}: $bodyPreview"
-            logger.error("【ERR】$msg", null)
+            val bodyPreview: String            try {
+                val full = response.text()
+                bodyPreview = if (full.length > 200) full.substring(0, 200) + "..." else full
+            } catch (_: Exception) {
+                bodyPreview = "(read failed)"
+            }
+            val msg = "HTTP " + response.statusCode + ": " + bodyPreview
+            logger.error(msg, null)
             throw RuntimeException(msg)
         }
 
-        // ── レスポンス本文の取得 ─────────────────────────────────
-        val body = try {            response.text()
+        // レスポンス本文取得
+        val body: String
+        try {
+            body = response.text()
         } catch (e: Exception) {
-            logger.error("【ERR】Failed to read response body: ${e.message}", e)
+            logger.error("Failed to read response body: " + e.message, e)
             throw RuntimeException("Response read error", e)
         }
         
-        logger.debug("【4/4】Response body (first 300 chars): ${body.take(300)}...")
+        val bodyPreview = if (body.length > 300) body.substring(0, 300) + "..." else body
+        logger.debug("[4/4] Response body: " + bodyPreview)
 
-        // ── JSON 解析（安全なインデックスアクセス） ───────────────
-        return try {
-            parseResponseSafe(body)
-        } catch (e: Exception) {
-            logger.error("【ERR】JSON parse failed: ${e.message}", e)
-            throw e
-        }
+        return parseResponseSafe(body)
     }
 
-    /**
-     * 🔧 難読化環境対応: Kotlin 拡張関数・イテレータ構文を一切使わない
-     * 純粋なインデックスアクセス + while ループのみ
-     */
     @Suppress("LoopWithTooManyJumpStatements")
     private fun parseResponseSafe(body: String): String {
-        logger.debug("【PARSE】Starting parse, body length: ${body.length}")
+        logger.debug("[PARSE] start. body length: " + body.length)
         
         val json: JSONArray
         try {
             json = JSONArray(body)
-            logger.debug("【PARSE】Root array length: ${json.length()}")
+            logger.debug("[PARSE] root array length: " + json.length())
         } catch (e: Exception) {
-            logger.error("【PARSE ERR】Failed to create JSONArray: ${e.message}", e)
+            logger.error("[PARSE] JSONArray creation failed: " + e.message, e)
             throw e
         }
         
         if (json.length() == 0) {
-            logger.warn("【PARSE】Empty root array")
+            logger.warn("[PARSE] empty root array", null)
             return ""
         }
         
         val sections: JSONArray
         try {
             sections = json.getJSONArray(0)
-            logger.debug("【PARSE】Sections array length: ${sections.length()}")
+            logger.debug("[PARSE] sections length: " + sections.length())
         } catch (e: Exception) {
-            logger.error("【PARSE ERR】No translations array at index 0: ${e.message}", e)
-            return ""
+            logger.error("[PARSE] no array at index 0: " + e.message, e)            return ""
         }
         
         val result = StringBuilder()
-        var idx = 0        val len = sections.length()
+        var idx = 0
+        val len = sections.length()
         
-        logger.debug("【PARSE】Looping $len segments...")
+        logger.debug("[PARSE] looping " + len + " segments")
         while (idx < len) {
             try {
                 val segment = sections.optJSONArray(idx)
@@ -105,17 +110,19 @@ object Translator {
                     val part = segment.optString(0)
                     if (part != null && part.isNotEmpty()) {
                         result.append(part)
-                        logger.debug("【PARSE】Segment $idx: '${part.take(30)}...'")
+                        val partPreview = if (part.length > 30) part.substring(0, 30) + "..." else part
+                        logger.debug("[PARSE] segment " + idx + ": " + partPreview)
                     }
                 }
             } catch (e: Exception) {
-                logger.warn("【PARSE】Failed segment $idx: ${e.message}", e)
+                logger.warn("[PARSE] failed at idx " + idx + ": " + e.message, e)
             }
-            idx = idx + 1  // 🔧 手動インクリメント
+            idx = idx + 1
         }
         
         val finalResult = result.toString()
-        logger.info("【PARSE OK】Final translation: '${finalResult.take(100)}...'")
+        val resultPreview = if (finalResult.length > 100) finalResult.substring(0, 100) + "..." else finalResult
+        logger.info("[PARSE] success: " + resultPreview)
         return finalResult
     }
 }
