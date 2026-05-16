@@ -31,21 +31,17 @@ class TranslatePlugin : Plugin() {
     )
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
     private val autoChannels = mutableSetOf<Long>()
-
-    // メインスレッド用ハンドラ
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
     override fun start(ctx: Context) {
-        logger.info("start() called")
+        logger.info("TranslatePlugin started")
         
         val buttonId = View.generateViewId()
         val autoButtonId = View.generateViewId()
-
         val messageContextMenu = WidgetChatListActions::class.java
         
-        // getBinding accessor
         val getBinding = try {
             messageContextMenu.getDeclaredMethod("getBinding").apply { isAccessible = true }
         } catch (e: Exception) {
@@ -53,49 +49,42 @@ class TranslatePlugin : Plugin() {
             return
         }
 
-        // ── 1. configureUI: click listeners ───────────────────────────────
-        logger.info("Patching configureUI")
+        // ── 1. configureUI ───────────────────────────────
         patcher.patch(
             messageContextMenu.getDeclaredMethod("configureUI", WidgetChatListActions.Model::class.java),
             Hook { cf ->
-                logger.debug("configureUI hook")
-                
                 val menu = cf.thisObject as WidgetChatListActions
                 val binding = try {
                     getBinding.invoke(menu) as WidgetChatListActionsBinding
                 } catch (e: Exception) {
-                    logger.error("getBinding invoke failed", e)
                     return@Hook
                 }
                 val model = cf.args[0] as? WidgetChatListActions.Model ?: return@Hook
                 val message = model.message
-                
-                logger.debug("message.id=${message.id}, channelId=${message.channelId}")
 
-                // 🔹 Translate Button
                 binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
-                    logger.info("Translate button clicked")
                     val entry = translatedMessages[message.id]
                     if (entry == null) {
                         Thread {
                             try {
                                 val content = message.content ?: return@Thread
+                                // Translator内でログを出さないので、ここでログを出す
+                                logger.info("Translating msg ${message.id}...")
                                 val result = Translator.translate(content, targetLang())
-                                if (result.isBlank()) return@Thread
                                 
-                                translatedMessages[message.id] = TranslatedEntry(content, result)
-                                
-                                mainHandler.post {
-                                    showTranslation(menu.requireContext(), content, result)
-                                    menu.dismiss()
+                                if (result.isNotBlank()) {
+                                    translatedMessages[message.id] = TranslatedEntry(content, result)
+                                    mainHandler.post {
+                                        showTranslation(menu.requireContext(), content, result)
+                                        menu.dismiss()
+                                    }
                                 }
                             } catch (e: Exception) {
-                                // 【修正】e.message を文字列結合し、第2引数には null を渡す
-                                val errorMsg = "Translation failed: ${e.message}"
-                                logger.error(errorMsg, null)
-                                
+                                // 例外メッセージだけを文字列として渡す
+                                val msg = "Err: ${e.javaClass.simpleName}"
+                                logger.error(msg, null)
                                 mainHandler.post { 
-                                    Toast.makeText(menu.requireContext(), "Error: ${e.message}", Toast.LENGTH_SHORT).show() 
+                                    Toast.makeText(menu.requireContext(), msg, Toast.LENGTH_SHORT).show() 
                                 }
                             }
                         }.start()
@@ -106,9 +95,7 @@ class TranslatePlugin : Plugin() {
                     }
                 }
 
-                // 🔹 Auto-Translate Button
                 binding.a.findViewById<TextView>(autoButtonId)?.setOnClickListener {
-                    logger.info("Auto-translate button clicked, channelId=${message.channelId}")
                     if (message.channelId in autoChannels) {
                         autoChannels.remove(message.channelId)
                         Toast.makeText(ctx, "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
@@ -121,36 +108,24 @@ class TranslatePlugin : Plugin() {
             }
         )
 
-        // ── 2. onViewCreated: add buttons to view ─────────────────────────
-        logger.info("Patching onViewCreated")
+        // ── 2. onViewCreated ─────────────────────────
         patcher.patch(
             messageContextMenu,
             "onViewCreated",
             arrayOf(View::class.java, Bundle::class.java),
             Hook { cf ->
-                logger.debug("onViewCreated hook")
-                
                 val linearLayout = (cf.args[0] as? NestedScrollView)?.getChildAt(0) as? LinearLayout
                     ?: return@Hook
                 val ctx2 = linearLayout.context
 
-                // 🔹 messageId
                 val messageId = try {
                     WidgetChatListActions.`access$getMessageId$p`(cf.thisObject as WidgetChatListActions)
-                } catch (e: Throwable) {
-                    logger.error("Cannot access messageId", e)
-                    return@Hook
-                }
+                } catch (e: Throwable) { return@Hook }
 
-                // 🔹 channelId
                 val channelId = try {
                     WidgetChatListActions.`access$getChannelId$p`(cf.thisObject as WidgetChatListActions)
-                } catch (e: Throwable) {
-                    logger.warn("Cannot access channelId, using 0L")
-                    0L
-                }
+                } catch (e: Throwable) { 0L }
 
-                // 🔹 Translate Button
                 val translateBtn = linearLayout.findViewById<TextView>(buttonId)
                     ?: TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                         id = buttonId
@@ -163,7 +138,6 @@ class TranslatePlugin : Plugin() {
                     else -> "Show Translation"
                 }
 
-                // 🔹 Auto-Translate Button
                 val autoBtn = linearLayout.findViewById<TextView>(autoButtonId)
                     ?: TextView(ctx2, null, 0, R.i.UiKit_Settings_Item_Icon).apply {
                         id = autoButtonId
@@ -172,12 +146,9 @@ class TranslatePlugin : Plugin() {
                 autoBtn.text = if (channelId in autoChannels) "Auto-Translate OFF" else "Auto-Translate ON"
             }
         )
-        
-        logger.info("start() done")
     }
 
     override fun stop(ctx: Context) {
-        logger.info("stop() called")
         patcher.unpatchAll()
     }
 
