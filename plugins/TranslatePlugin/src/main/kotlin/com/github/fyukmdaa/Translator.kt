@@ -6,7 +6,6 @@ import com.aliucord.Logger
 import org.json.JSONArray
 
 object Translator {
-    private val logger = Logger("TranslatePlugin")
 
     fun translate(text: String, targetLang: String = "ja"): String {
         logger.info("翻訳開始: text=${text.take(50)}..., lang=$targetLang")
