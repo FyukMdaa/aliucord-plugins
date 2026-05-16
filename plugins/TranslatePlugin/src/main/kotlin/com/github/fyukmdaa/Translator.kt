@@ -3,6 +3,7 @@ package com.github.fyukmdaa
 import com.aliucord.Http
 import com.aliucord.Logger
 import org.json.JSONArray
+import java.net.URLEncoder
 
 object Translator {
     private val logger = Logger("TranslatePlugin")
@@ -10,9 +11,20 @@ object Translator {
     fun translate(text: String, targetLang: String = "ja"): String {
         logger.info("翻訳開始: text=${text.take(50)}..., lang=$targetLang")
 
-        // URL 構築
-        val baseUrl = "https://translate.googleapis.com/translate_a/single"
-        val url = "$baseUrl?client=gtx&sl=auto&tl=$targetLang&dt=t&q=${Http.urlEncode(text)}"
+        // 🔧 URL エンコード: URLEncoder を使用
+        val encodedText = try {
+            URLEncoder.encode(text, "UTF-8")
+        } catch (e: Exception) {
+            logger.error("URL encode failed", e)
+            throw RuntimeException("URL encode error: ${e.message}", e)
+        }
+        
+        val url = "https://translate.googleapis.com/translate_a/single" +
+                "?client=gtx" +
+                "&sl=auto" +
+                "&tl=$targetLang" +
+                "&dt=t" +
+                "&q=$encodedText"
         
         logger.debug("URL: $url")
 
@@ -22,38 +34,35 @@ object Translator {
                 setHeader("User-Agent", "Mozilla/5.0")
             }.execute()
         } catch (e: Exception) {
-            logger.error("HTTP request failed", e)
+            logger.error("HTTP request failed", e)  // 🔧 第2引数は Throwable
             throw RuntimeException("Network error: ${e.message}", e)
         }
 
         if (!response.ok()) {
-            val msg = "HTTP ${response.statusCode}: ${response.text().take(200)}"
-            logger.error(msg)
+            val bodyPreview = response.text().take(200)
+            val msg = "HTTP ${response.statusCode}: $bodyPreview"
+            logger.error(msg, null)  // 🔧 例外がない場合は null
             throw RuntimeException(msg)
         }
 
         val body = response.text()
         logger.debug("Response: ${body.take(300)}...")
 
-        // 解析（例外は上位に投げる）
         return parseGoogleTranslateResponse(body)
     }
 
     /**
      * 🔧 難読化環境対応: Kotlin 拡張関数・イテレータ構文を一切使わない
-     * 純粋なインデックスアクセス + while ループのみで実装
      */
     @Suppress("LoopWithTooManyJumpStatements")
     private fun parseGoogleTranslateResponse(body: String): String {
         val json = JSONArray(body)
         
-        // 防御的チェック
         if (json.length() == 0) {
-            logger.warn("Empty response array")
+            logger.warn("Empty response array", null)
             return ""
         }
         
-        // 最初の要素 [0] が翻訳セグメントの配列
         val sections: JSONArray = try {
             json.getJSONArray(0)
         } catch (e: Exception) {
@@ -63,8 +72,7 @@ object Translator {
         
         val result = StringBuilder()
         
-        // 🔧 重要: 従来の while ループ + 手動インクリメント
-        // "for (i in 0 until n)" や "for (item in array)" は使わない
+        // 🔧 伝統的な while ループ + 手動インクリメント
         var index = 0
         val sectionsLength = sections.length()
         while (index < sectionsLength) {
@@ -78,13 +86,12 @@ object Translator {
                 }
             } catch (e: Exception) {
                 logger.warn("Failed to parse segment at index $index", e)
-                // 一部失敗しても続行
             }
-            index = index + 1  // 🔧 手動インクリメント（++ も避ける）
+            index = index + 1
         }
         
         val finalResult = result.toString()
-        logger.debug("Parsed translation: ${finalResult.take(100)}...")
+        logger.debug("Parsed: ${finalResult.take(100)}...")
         return finalResult
     }
 }
