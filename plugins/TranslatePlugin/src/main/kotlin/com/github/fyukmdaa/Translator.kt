@@ -1,4 +1,3 @@
-// src/plugins/TranslatePlugin/src/main/kotlin/com/github/fyukmdaa/Translator.kt
 package com.github.fyukmdaa
 
 import com.aliucord.Http
@@ -6,79 +5,86 @@ import com.aliucord.Logger
 import org.json.JSONArray
 
 object Translator {
+    private val logger = Logger("TranslatePlugin")
 
     fun translate(text: String, targetLang: String = "ja"): String {
         logger.info("翻訳開始: text=${text.take(50)}..., lang=$targetLang")
 
-        val url = Http.QueryBuilder("https://translate.googleapis.com/translate_a/single")
-            .append("client", "gtx")
-            .append("sl", "auto")
-            .append("tl", targetLang)
-            .append("dt", "t")
-            .append("q", text)
-            .toString()
-
+        // URL 構築
+        val baseUrl = "https://translate.googleapis.com/translate_a/single"
+        val url = "$baseUrl?client=gtx&sl=auto&tl=$targetLang&dt=t&q=${Http.urlEncode(text)}"
+        
         logger.debug("URL: $url")
 
+        // HTTP リクエスト
         val response = try {
             Http.Request(url, "GET").apply {
-                setHeader("Content-Type", "application/json")
                 setHeader("User-Agent", "Mozilla/5.0")
             }.execute()
         } catch (e: Exception) {
             logger.error("HTTP request failed", e)
-            throw e
+            throw RuntimeException("Network error: ${e.message}", e)
         }
 
-        logger.debug("HTTP status: ${response.statusCode}")
         if (!response.ok()) {
-            throw Exception("HTTP ${response.statusCode}: ${response.text().take(200)}")
+            val msg = "HTTP ${response.statusCode}: ${response.text().take(200)}"
+            logger.error(msg)
+            throw RuntimeException(msg)
         }
 
         val body = response.text()
-        logger.debug("Response body: ${body.take(500)}...")
+        logger.debug("Response: ${body.take(300)}...")
 
-        return try {
-            parseTranslationResponse(body)
-        } catch (e: Exception) {
-            logger.error("Failed to parse response", e)
-            throw e
-        }
+        // 解析（例外は上位に投げる）
+        return parseGoogleTranslateResponse(body)
     }
 
     /**
-     * Google Translate API のレスポンスを解析する
-     * 🔧 Iterator 関連のキャストエラーを避けるため、伝統的な while ループを使用
+     * 🔧 難読化環境対応: Kotlin 拡張関数・イテレータ構文を一切使わない
+     * 純粋なインデックスアクセス + while ループのみで実装
      */
-    private fun parseTranslationResponse(body: String): String {
+    @Suppress("LoopWithTooManyJumpStatements")
+    private fun parseGoogleTranslateResponse(body: String): String {
         val json = JSONArray(body)
         
-        // 最初の配列 [0] が翻訳セグメントの配列
-        if (json.length() == 0) return ""
+        // 防御的チェック
+        if (json.length() == 0) {
+            logger.warn("Empty response array")
+            return ""
+        }
         
-        val sections = json.getJSONArray(0)
+        // 最初の要素 [0] が翻訳セグメントの配列
+        val sections: JSONArray = try {
+            json.getJSONArray(0)
+        } catch (e: Exception) {
+            logger.warn("No translations array at index 0", e)
+            return ""
+        }
+        
         val result = StringBuilder()
         
-        // 🔧 重要: Kotlin の "for (i in 0 until ...)" は避ける
-        // 難読化環境では IntIterator へのキャストで失敗する可能性があるため、
-        // 従来の while + 手動インクリメントを使用
-        var i = 0
-        while (i < sections.length()) {
+        // 🔧 重要: 従来の while ループ + 手動インクリメント
+        // "for (i in 0 until n)" や "for (item in array)" は使わない
+        var index = 0
+        val sectionsLength = sections.length()
+        while (index < sectionsLength) {
             try {
-                val segment = sections.getJSONArray(i)
-                if (segment.length() > 0) {
+                val segment = sections.optJSONArray(index)
+                if (segment != null && segment.length() > 0) {
                     val translatedPart = segment.optString(0)
-                    if (translatedPart.isNotEmpty()) {
+                    if (translatedPart != null && translatedPart.isNotEmpty()) {
                         result.append(translatedPart)
                     }
                 }
             } catch (e: Exception) {
-                logger.warn("Failed to parse segment at index $i", e)
-                // 一部のパース失敗は全体を失敗させず続行
+                logger.warn("Failed to parse segment at index $index", e)
+                // 一部失敗しても続行
             }
-            i++  // 🔧 手動インクリメント
+            index = index + 1  // 🔧 手動インクリメント（++ も避ける）
         }
         
-        return result.toString()
+        val finalResult = result.toString()
+        logger.debug("Parsed translation: ${finalResult.take(100)}...")
+        return finalResult
     }
 }
