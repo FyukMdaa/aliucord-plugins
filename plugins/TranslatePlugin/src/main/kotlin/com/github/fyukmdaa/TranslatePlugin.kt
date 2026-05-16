@@ -33,14 +33,13 @@ class TranslatePlugin : Plugin() {
     private val autoChannels = mutableSetOf<Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
     
+    // Contextは start() で受け取るものの、UI表示には menu.requireContext() を使うのでここでは保持しなくても良いが、念のため
     private lateinit var safeContext: Context
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
-    // 【修正】isBlank() の代わりに使う安全な関数（イテレータを使わない）
     private fun isBlankSafe(str: String): Boolean {
         if (str.isEmpty()) return true
-        // インデックスループで1文字ずつチェック
         for (i in 0 until str.length) {
             if (!str[i].isWhitespace()) return false
         }
@@ -89,7 +88,6 @@ class TranslatePlugin : Plugin() {
                                 val rawContent = message.content
                                 val content = if (rawContent is String) rawContent else rawContent?.toString() ?: return@setOnClickListener
                                 
-                                // 【修正】ここで isBlank() を使うとクラッシュするため、自作関数を使う
                                 if (isBlankSafe(content)) return@setOnClickListener
                                 
                                 val lang = targetLang()
@@ -97,24 +95,26 @@ class TranslatePlugin : Plugin() {
                                 Thread {
                                     try {
                                         val result = Translator.translate(content, lang)
-                                        if (result.isNotEmpty()) { // ここも isBlank を避けて isNotEmpty に変更
+                                        if (result.isNotEmpty()) {
                                             translatedMessages[message.id] = TranslatedEntry(content, result)
                                             mainHandler.post {
                                                 logger.info("Translation success for msg ${message.id}")
-                                                showTranslation(safeContext, content, result)
+                                                // 【重要】ここで menu.requireContext() を渡す
+                                                showTranslation(menu.requireContext(), content, result)
                                                 menu.dismiss()
                                             }
                                         }
                                     } catch (e: Exception) {
                                         mainHandler.post { 
                                             logger.error("Translation error", null)
-                                            Toast.makeText(safeContext, "Translation Failed", Toast.LENGTH_SHORT).show() 
+                                            Toast.makeText(menu.requireContext(), "Translation Failed", Toast.LENGTH_SHORT).show() 
                                         }
                                     }
                                 }.start()
                             } else {
                                 entry.showingTranslation = !entry.showingTranslation
-                                showTranslation(safeContext, entry.original, entry.translated)
+                                // ここも menu.requireContext() を使う
+                                showTranslation(menu.requireContext(), entry.original, entry.translated)
                                 menu.dismiss()
                             }
                         }
@@ -122,10 +122,10 @@ class TranslatePlugin : Plugin() {
                         binding.a.findViewById<TextView>(autoButtonId)?.setOnClickListener {
                             if (message.channelId in autoChannels) {
                                 autoChannels.remove(message.channelId)
-                                Toast.makeText(safeContext, "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(menu.requireContext(), "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
                             } else {
                                 autoChannels.add(message.channelId)
-                                Toast.makeText(safeContext, "Auto-Translate ON", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(menu.requireContext(), "Auto-Translate ON", Toast.LENGTH_SHORT).show()
                             }
                             menu.dismiss()
                         }
@@ -164,9 +164,9 @@ class TranslatePlugin : Plugin() {
                                 }
                             val entry = translatedMessages[messageId]
                             translateBtn.text = when {
-                                entry == null -> "Translate Message"
-                                entry.showingTranslation -> "Show Original"
-                                else -> "Show Translation"
+                                entry == null -> "🌐 Translate"
+                                entry.showingTranslation -> "🌐 Show Original"
+                                else -> "🌐 Show Translation"
                             }
 
                             val autoBtn = linearLayout.findViewById<TextView>(autoButtonId)
@@ -174,7 +174,7 @@ class TranslatePlugin : Plugin() {
                                     id = autoButtonId
                                     linearLayout.addView(this)
                                 }
-                            autoBtn.text = if (channelId in autoChannels) "Auto-Translate OFF" else "Auto-Translate ON"
+                            autoBtn.text = if (channelId in autoChannels) "🌐 Auto-Translate OFF" else "🌐 Auto-Translate ON"
                         } catch (e: Exception) {
                             logger.error("Error inside onViewCreated hook", null)
                         }
@@ -201,8 +201,9 @@ class TranslatePlugin : Plugin() {
                 .setPositiveButton("Close", null)
                 .show()
         } catch (e: Exception) {
-            logger.error("Failed to show dialog", null)
-            Toast.makeText(ctx, "Translated (Check Log)", Toast.LENGTH_SHORT).show()
+            // エラーの詳細をログに出す（例外オブジェクトは渡さない）
+            logger.error("Failed to show dialog: ${e.javaClass.simpleName} - ${e.message}", null)
+            Toast.makeText(ctx, "Translated (See Log)", Toast.LENGTH_SHORT).show()
         }
     }
 }
