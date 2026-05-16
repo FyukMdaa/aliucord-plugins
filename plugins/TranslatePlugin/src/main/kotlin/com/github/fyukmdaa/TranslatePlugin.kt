@@ -23,6 +23,7 @@ import com.discord.utilities.view.text.SimpleDraweeSpanTextView
 import com.facebook.drawee.span.DraweeSpanStringBuilder
 import com.lytefast.flexinput.R
 import java.lang.reflect.Field
+import java.lang.reflect.Method
 
 @AliucordPlugin
 class TranslatePlugin : Plugin() {
@@ -42,6 +43,7 @@ class TranslatePlugin : Plugin() {
     
     private var chatList: WidgetChatList? = null
     private lateinit var mDraweeStringBuilderField: Field
+    private var rerenderMethod: Method? = null
 
     private fun targetLang() = settings.getString("targetLang", "ja")
 
@@ -51,6 +53,35 @@ class TranslatePlugin : Plugin() {
             if (!str[i].isWhitespace()) return false
         }
         return true
+    }
+
+    private fun rerenderMessage(id: Long) {
+        val list = chatList ?: return
+        try {
+            if (rerenderMethod == null) {
+                rerenderMethod = WidgetChatList::class.java.getDeclaredMethod("rerenderMessage", Long::class.javaPrimitiveType)
+                rerenderMethod?.isAccessible = true
+            }
+            rerenderMethod?.invoke(list, id)
+        } catch (e: Exception) {
+            // rerenderMessage が見つからない場合のフォールバック
+            try {
+                val adapterField = WidgetChatList::class.java.getDeclaredField("adapter").apply { isAccessible = true }
+                val adapter = adapterField.get(list)
+                val dataField = adapter.javaClass.superclass.getDeclaredField("data").apply { isAccessible = true }
+                val data = dataField.get(adapter) as List<*>
+                val index = data.indexOfFirst { 
+                    val entry = it as? MessageEntry
+                    entry?.message?.id == id
+                }
+                if (index != -1) {
+                    val notifyMethod = adapter.javaClass.superclass.superclass.getDeclaredMethod("notifyItemChanged", Int::class.javaPrimitiveType)
+                    notifyMethod.invoke(adapter, index)
+                }
+            } catch (ex: Exception) {
+                logger.error("❌ Failed to rerender message $id", ex)
+            }
+        }
     }
 
     override fun start(ctx: Context) {
@@ -150,7 +181,7 @@ class TranslatePlugin : Plugin() {
                                                 logger.info("Translation success for msg ${message.id}")
                                                 Toast.makeText(menu.requireContext(), "Message Translated!", Toast.LENGTH_SHORT).show()
                                                 // メッセージを再描画
-                                                chatList?.rerenderMessage(message.id)
+                                                rerenderMessage(message.id)
                                                 menu.dismiss()
                                             }
                                         }
@@ -164,7 +195,7 @@ class TranslatePlugin : Plugin() {
                             } else {
                                 entry.showingTranslation = !entry.showingTranslation
                                 // メッセージを再描画
-                                chatList?.rerenderMessage(message.id)
+                                rerenderMessage(message.id)
                                 menu.dismiss()
                             }
                         }
