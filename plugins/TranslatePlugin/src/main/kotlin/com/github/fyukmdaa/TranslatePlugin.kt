@@ -34,7 +34,7 @@ class TranslatePlugin : Plugin() {
         val original: String,
         val translated: String,
         var showingTranslation: Boolean = true,
-        val channelId: Long // チャンネル一括操作用に保持
+        val channelId: Long
     )
 
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
@@ -45,6 +45,9 @@ class TranslatePlugin : Plugin() {
     private var chatList: WidgetChatList? = null
     private var adapterField: Field? = null
     private var dataField: Field? = null
+    
+    // パフォーマンス最適化：Messageクラスの生のテキストフィールドをキャッシュする変数
+    private var messageContentField: Field? = null
 
     private val discordTagPattern = Pattern.compile("<(?:a?:\\w+:\\d+|@&?\\d+|#\\d+|@!\\d+)>")
 
@@ -59,12 +62,15 @@ class TranslatePlugin : Plugin() {
         return true
     }
 
+    // 初回だけリフレクションでフィールドを検索し、2回目以降はキャッシュを再利用する
     private fun getRawContent(message: Message): String? {
         return try {
-            Message::class.java.declaredFields
-                .firstOrNull { it.type == String::class.java }
-                ?.also { it.isAccessible = true }
-                ?.get(message) as? String
+            if (messageContentField == null) {
+                messageContentField = Message::class.java.declaredFields
+                    .firstOrNull { it.type == String::class.java }
+                    ?.apply { isAccessible = true }
+            }
+            messageContentField?.get(message) as? String
         } catch (e: Exception) { null }
     }
 
@@ -149,9 +155,6 @@ class TranslatePlugin : Plugin() {
                     if (result.contains("\\u003c")) result = result.replace("\\u003c", "<")
                     if (result.contains("\\u003e")) result = result.replace("\\u003e", ">")
 
-                    // 【除外言語/不要翻訳ガード】
-                    // 翻訳結果が元のテキストと完全に一致する場合、または翻訳先が「ja」かつ結果に日本語が含まれていないなどの不整合を防ぐため、
-                    // 原文と変化がなければ翻訳を適用せずスキップ（無駄な描画更新を防止）
                     if (result.trim().equals(content.trim(), ignoreCase = true)) {
                         return@Thread
                     }
@@ -271,8 +274,6 @@ class TranslatePlugin : Plugin() {
                                 if (currentChannelId in autoChannels) {
                                     autoChannels.remove(currentChannelId)
                                     
-                                    // 【自動翻訳OFF連動：表示リセット】
-                                    // 該当チャンネルに属するメッセージの表示フラグを一括で引き剥がし、再レンダリングをかける
                                     translatedMessages.filterValues { it.channelId == currentChannelId }
                                         .forEach { (id, entry) ->
                                             entry.showingTranslation = false
