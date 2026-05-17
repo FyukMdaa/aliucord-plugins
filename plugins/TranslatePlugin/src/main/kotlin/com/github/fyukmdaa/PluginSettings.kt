@@ -2,9 +2,10 @@ package com.github.fyukmdaa
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.widget.*
-import androidx.core.widget.doAfterTextChanged
 import com.aliucord.api.SettingsAPI
 import com.aliucord.fragments.SettingsPage
 import com.aliucord.views.Divider
@@ -129,22 +130,27 @@ class PluginSettings(private val settings: SettingsAPI) : SettingsPage() {
             .setNegativeButton("Cancel", null)
             .create()
 
-        // タイピングに合わせてリアルタイムフィルター
-        searchView.doAfterTextChanged { text ->
-            val query = text.toString().trim()
-            filteredList = if (query.isEmpty()) {
-                allLanguages
-            } else {
-                allLanguages.filter { 
-                    it.first.contains(query, ignoreCase = true) || 
-                    it.second.contains(query, ignoreCase = true) 
-                }
-            }
+        // タイピングに合わせてリアルタイムフィルター (標準の TextWatcher を使用)
+        searchView.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             
-            adapter.clear()
-            adapter.addAll(filteredList.map { "${it.first} (${it.second})" })
-            adapter.notifyDataSetChanged()
-        }
+            override fun afterTextChanged(s: Editable?) {
+                val query = s.toString().trim()
+                filteredList = if (query.isEmpty()) {
+                    allLanguages
+                } else {
+                    allLanguages.filter { 
+                        it.first.contains(query, ignoreCase = true) || 
+                        it.second.contains(query, ignoreCase = true) 
+                    }
+                }
+                
+                adapter.clear()
+                adapter.addAll(filteredList.map { "${it.first} (${it.second})" })
+                adapter.notifyDataSetChanged()
+            }
+        })
 
         // アイテム選択時
         listView.setOnItemClickListener { _, _, position, _ ->
