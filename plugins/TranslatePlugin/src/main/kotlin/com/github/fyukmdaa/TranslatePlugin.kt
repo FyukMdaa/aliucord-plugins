@@ -14,17 +14,16 @@ import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
 import com.discord.databinding.WidgetChatListActionsBinding
 import com.discord.models.message.Message
+import com.discord.utilities.view.text.SimpleDraweeSpanTextView
 import com.discord.widgets.chat.list.WidgetChatList
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
+import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage
 import com.discord.widgets.chat.list.entries.MessageEntry
+import com.facebook.drawee.span.DraweeSpanStringBuilder
 import com.lytefast.flexinput.R
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
-import com.discord.utilities.view.text.SimpleDraweeSpanTextView
-import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage
-import com.discord.widgets.chat.list.entries.MessageEntry
-import com.facebook.drawee.span.DraweeSpanStringBuilder
 
 @AliucordPlugin
 class TranslatePlugin : Plugin() {
