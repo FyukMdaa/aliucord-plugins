@@ -14,12 +14,9 @@ import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
 import com.discord.databinding.WidgetChatListActionsBinding
 import com.discord.models.message.Message
-import com.discord.utilities.view.text.SimpleDraweeSpanTextView
 import com.discord.widgets.chat.list.WidgetChatList
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
-import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage
 import com.discord.widgets.chat.list.entries.MessageEntry
-import com.facebook.drawee.span.DraweeSpanStringBuilder
 import com.lytefast.flexinput.R
 import java.lang.reflect.Field
 import java.lang.reflect.Method
@@ -144,25 +141,20 @@ class TranslatePlugin : Plugin() {
         translatingIds.add(messageId)
         Thread {
             try {
-                // ── Discord特有タグの保護処理 ──
                 val tagsList = mutableListOf<String>()
                 val matcher = discordTagPattern.matcher(content)
                 val sb = StringBuffer()
                 
                 while (matcher.find()) {
                     tagsList.add(matcher.group())
-                    // 翻訳エンジンに壊されないよう、__TAG_0__ のような形式に一時置換
                     matcher.appendReplacement(sb, " __TAG_${tagsList.size - 1}__ ")
                 }
                 matcher.appendTail(sb)
                 val processedContent = sb.toString()
 
-                // 翻訳を実行
                 var result = Translator.translate(processedContent, lang)
 
                 if (result.isNotEmpty()) {
-                    // ── タグの復元処理 ──
-                    // 翻訳エンジンが前後に余計な空白を詰めることがあるため、前後のスペースの有無に対応できるように正規表現で戻す
                     for (i in tagsList.indices) {
                         val placeholderPattern = Pattern.compile("\\s*__TAG_${i}__\\s*")
                         val tagMatcher = placeholderPattern.matcher(result)
@@ -171,13 +163,8 @@ class TranslatePlugin : Plugin() {
                         }
                     }
 
-                    // Unicodeエスケープ残滓のクリーンアップ（念のため）
-                    if (result.contains("\\u003c")) {
-                        result = result.replace("\\u003c", "<")
-                    }
-                    if (result.contains("\\u003e")) {
-                        result = result.replace("\\u003e", ">")
-                    }
+                    if (result.contains("\\u003c")) result = result.replace("\\u003c", "<")
+                    if (result.contains("\\u003e")) result = result.replace("\\u003e", ">")
 
                     translatedMessages[messageId] = TranslatedEntry(content, result)
                     onComplete?.invoke()
@@ -217,57 +204,34 @@ class TranslatePlugin : Plugin() {
                 logger.error("Failed to patch WidgetChatList constructor", e)
             }
 
-            // ── 1a. Message.getContent フック ────────────────────────
+            // ── 1. Message.getContent フック（描画のパース元を上書き） ──
             try {
                 patcher.patch(Message::class.java, "getContent", emptyArray(), Hook { cf ->
                     try {
                         val message = cf.thisObject as Message
-                        if (translatedMessages[message.id] == null && message.channelId in autoChannels) {
+                        val entry = translatedMessages[message.id]
+
+                        // 自動翻訳のトリガーチェック
+                        if (entry == null && message.channelId in autoChannels) {
                             val rawContent = getRawContent(message)
                             if (!rawContent.isNullOrEmpty() && !isBlankSafe(rawContent)) {
                                 translateAsync(message.id, rawContent, targetLang())
                             }
                         }
-                    } catch (e: Exception) { }
-                })
-            } catch (e: Exception) {
-                logger.error("Failed to patch Message.getContent", e)
-            }
 
-            // ── 1b. processMessageText フック ────────────────────────
-            try {
-                val mDraweeStringBuilder: Field = SimpleDraweeSpanTextView::class.java
-                    .getDeclaredField("mDraweeStringBuilder")
-                    .apply { isAccessible = true }
-
-                patcher.patch(
-                    WidgetChatListAdapterItemMessage::class.java,
-                   "processMessageText",
-                    arrayOf(SimpleDraweeSpanTextView::class.java, MessageEntry::class.java),
-                    Hook { cf ->
-                        try {
-                            val messageEntry = cf.args[1] as MessageEntry
-                            val message = messageEntry.message ?: return@Hook
-                            val entry = translatedMessages[message.id] ?: return@Hook
-                            if (!entry.showingTranslation) return@Hook
-
-                            val textView = cf.args[0] as SimpleDraweeSpanTextView
-                            val builder = mDraweeStringBuilder[textView] as? DraweeSpanStringBuilder
-                                ?: return@Hook
-
+                        // 翻訳データが存在し、かつ表示フラグがオンなら、Discordに渡す文字列自体をすり替える
+                        if (entry != null && entry.showingTranslation) {
                             val display = if (showOriginal()) {
                                 "${entry.original}\n---\n${entry.translated}"
                             } else {
                                 entry.translated
                             }
-
-                            builder.replace(0, builder.length, display)
-                            textView.setDraweeSpanStringBuilder(builder)
-                        } catch (e: Exception) { }
-                    }
-                )
+                            cf.result = display // ★Discordのパースエンジンに翻訳後テキストを流し込む
+                        }
+                    } catch (e: Exception) { }
+                })
             } catch (e: Exception) {
-                logger.error("Failed to patch processMessageText", e)
+                logger.error("Failed to patch Message.getContent", e)
             }
 
             // ── 2. configureUI フック ───────────────────────────────
