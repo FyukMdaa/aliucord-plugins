@@ -69,7 +69,10 @@ class TranslatePlugin : Plugin() {
     }
 
     private fun rerenderMessage(id: Long) {
-        val list = chatList ?: return
+        val list = chatList ?: run {
+            logger.warn("rerenderMessage: chatList is null!")  // ★ログ追加
+            return
+        }
         mainHandler.post {
             try {
                 if (rerenderMethod == null) {
@@ -87,8 +90,10 @@ class TranslatePlugin : Plugin() {
                         rerenderMethod?.isAccessible = true
                     }
                 }
-                rerenderMethod?.invoke(list, id)
+                val result = rerenderMethod?.invoke(list, id)
+                logger.info("rerenderMessage invoked: id=$id, method=$rerenderMethod")  // ★ログ追加
             } catch (e: Exception) {
+                logger.error("rerenderMessage failed, attempting fallback notifyItemChanged", e)  // ★ログ追加
                 try {
                     if (adapterField == null) {
                         adapterField = WidgetChatList::class.java.declaredFields
@@ -128,8 +133,13 @@ class TranslatePlugin : Plugin() {
                             }
                         }
                         notifyMethod?.invoke(adapter, index)
+                        logger.info("Fallback notifyItemChanged invoked: id=$id, index=$index")
+                    } else {
+                        logger.warn("Fallback failed: message id=$id not found in adapter data")
                     }
-                } catch (ex: Exception) { }
+                } catch (ex: Exception) {
+                    logger.error("Fallback rerender completely failed", ex)  // ★ログ追加
+                }
             }
         }
     }
@@ -194,7 +204,6 @@ class TranslatePlugin : Plugin() {
                                 translateAsync(message.id, rawContent, targetLang())
                             }
                         }
-                        // cf.result は書き換えない
                     } catch (e: Exception) { }
                 })
             } catch (e: Exception) {
@@ -215,7 +224,10 @@ class TranslatePlugin : Plugin() {
                         try {
                             val messageEntry = cf.args[1] as MessageEntry
                             val message = messageEntry.message ?: return@Hook
-                            val entry = translatedMessages[message.id] ?: return@Hook
+                            val entry = translatedMessages[message.id]
+                            logger.info("processMessageText called: id=${message.id}, entry=$entry")  // ★ログ追加
+                            
+                            entry ?: return@Hook
                             if (!entry.showingTranslation) return@Hook
 
                             val textView = cf.args[0] as SimpleDraweeSpanTextView
