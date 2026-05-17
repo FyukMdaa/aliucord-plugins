@@ -38,7 +38,7 @@ subprojects {
 
     configure<AliucordExtension> {
         // TODO: Change to your name and user ID
-        author("fyukmdaa", 10842767967799296610L, hyperlink = true)
+        author("fyukmdaa", 1084276796779929661L, hyperlink = true)
 
         // TODO: Change to your repository
         github("https://github.com/FyukMdaa/aliucord-plugins")
