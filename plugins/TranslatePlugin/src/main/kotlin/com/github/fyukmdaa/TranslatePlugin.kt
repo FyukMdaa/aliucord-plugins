@@ -33,7 +33,8 @@ class TranslatePlugin : Plugin() {
     private data class TranslatedEntry(
         val original: String,
         val translated: String,
-        var showingTranslation: Boolean = true
+        var showingTranslation: Boolean = true,
+        val channelId: Long // チャンネル一括操作用に保持
     )
 
     private val translatedMessages = mutableMapOf<Long, TranslatedEntry>()
@@ -45,7 +46,6 @@ class TranslatePlugin : Plugin() {
     private var adapterField: Field? = null
     private var dataField: Field? = null
 
-    // Discordのカスタム絵文字、メンション、チャンネルタグなどを抽出する正規表現
     private val discordTagPattern = Pattern.compile("<(?:a?:\\w+:\\d+|@&?\\d+|#\\d+|@!\\d+)>")
 
     private fun targetLang() = settings.getString("targetLang", "ja")
@@ -69,10 +69,7 @@ class TranslatePlugin : Plugin() {
     }
 
     private fun rerenderMessage(id: Long) {
-        val list = chatList ?: run {
-            logger.warn("rerenderMessage: chatList is null!")
-            return
-        }
+        val list = chatList ?: return
         mainHandler.post {
             try {
                 if (adapterField == null) {
@@ -80,10 +77,7 @@ class TranslatePlugin : Plugin() {
                         .find { it.type.name.contains("WidgetChatListAdapter") }
                     adapterField?.isAccessible = true
                 }
-                val adapter = adapterField?.get(list) ?: run {
-                    logger.warn("rerenderMessage: adapter is null")
-                    return@post
-                }
+                val adapter = adapterField?.get(list) ?: return@post
 
                 if (dataField == null) {
                     var clazz: Class<*>? = adapter.javaClass
@@ -97,19 +91,9 @@ class TranslatePlugin : Plugin() {
                     dataField?.isAccessible = true
                 }
 
-                val data = dataField?.get(adapter) as? List<*> ?: run {
-                    logger.warn("rerenderMessage: data is null")
-                    return@post
-                }
-
-                val index = data.indexOfFirst {
-                    (it as? MessageEntry)?.message?.id == id
-                }
-
-                if (index == -1) {
-                    logger.warn("rerenderMessage: message not found in list, id=$id")
-                    return@post
-                }
+                val data = dataField?.get(adapter) as? List<*> ?: return@post
+                val index = data.indexOfFirst { (it as? MessageEntry)?.message?.id == id }
+                if (index == -1) return@post
 
                 var notifyMethod: Method? = null
                 var currentClass: Class<*>? = adapter.javaClass
@@ -123,8 +107,6 @@ class TranslatePlugin : Plugin() {
                     }
                 }
                 notifyMethod?.invoke(adapter, index)
-                logger.info("rerenderMessage: notifyItemChanged($index) called for id=$id")
-
             } catch (e: Exception) {
                 logger.error("rerenderMessage failed", e)
             }
@@ -133,6 +115,7 @@ class TranslatePlugin : Plugin() {
 
     private fun translateAsync(
         messageId: Long,
+        channelId: Long,
         content: String,
         lang: String,
         onComplete: (() -> Unit)? = null
@@ -166,7 +149,14 @@ class TranslatePlugin : Plugin() {
                     if (result.contains("\\u003c")) result = result.replace("\\u003c", "<")
                     if (result.contains("\\u003e")) result = result.replace("\\u003e", ">")
 
-                    translatedMessages[messageId] = TranslatedEntry(content, result)
+                    // 【除外言語/不要翻訳ガード】
+                    // 翻訳結果が元のテキストと完全に一致する場合、または翻訳先が「ja」かつ結果に日本語が含まれていないなどの不整合を防ぐため、
+                    // 原文と変化がなければ翻訳を適用せずスキップ（無駄な描画更新を防止）
+                    if (result.trim().equals(content.trim(), ignoreCase = true)) {
+                        return@Thread
+                    }
+
+                    translatedMessages[messageId] = TranslatedEntry(content, result, true, channelId)
                     onComplete?.invoke()
                     rerenderMessage(messageId)
                 }
@@ -195,7 +185,6 @@ class TranslatePlugin : Plugin() {
                     ?.apply { isAccessible = true }
             }
 
-            // ── 0. WidgetChatList の取得 ──────────────────────────────
             try {
                 patcher.patch(WidgetChatList::class.java.getDeclaredConstructor(), Hook {
                     chatList = it.thisObject as WidgetChatList
@@ -204,29 +193,27 @@ class TranslatePlugin : Plugin() {
                 logger.error("Failed to patch WidgetChatList constructor", e)
             }
 
-            // ── 1. Message.getContent フック（描画のパース元を上書き） ──
+            // ── 1. Message.getContent フック ────────────────────────
             try {
                 patcher.patch(Message::class.java, "getContent", emptyArray(), Hook { cf ->
                     try {
                         val message = cf.thisObject as Message
                         val entry = translatedMessages[message.id]
 
-                        // 自動翻訳のトリガーチェック
                         if (entry == null && message.channelId in autoChannels) {
                             val rawContent = getRawContent(message)
                             if (!rawContent.isNullOrEmpty() && !isBlankSafe(rawContent)) {
-                                translateAsync(message.id, rawContent, targetLang())
+                                translateAsync(message.id, message.channelId, rawContent, targetLang())
                             }
                         }
 
-                        // 翻訳データが存在し、かつ表示フラグがオンなら、Discordに渡す文字列自体をすり替える
                         if (entry != null && entry.showingTranslation) {
                             val display = if (showOriginal()) {
                                 "${entry.original}\n---\n${entry.translated}"
                             } else {
                                 entry.translated
                             }
-                            cf.result = display // ★Discordのパースエンジンに翻訳後テキストを流し込む
+                            cf.result = display
                         }
                     } catch (e: Exception) { }
                 })
@@ -255,18 +242,16 @@ class TranslatePlugin : Plugin() {
                                 getBinding?.invoke(menu) as? WidgetChatListActionsBinding
                             } catch (e: Exception) { null } ?: return@Hook
 
-                            val model = cf.args[0] as? WidgetChatListActions.Model
-                                ?: return@Hook
+                            val model = cf.args[0] as? WidgetChatListActions.Model ?: return@Hook
                             val message = model.message
                             val context = try { menu.requireContext() } catch (e: Exception) { null }
 
                             binding.a.findViewById<TextView>(buttonId)?.setOnClickListener {
                                 val entry = translatedMessages[message.id]
                                 if (entry == null) {
-                                    val rawContent = getRawContent(message)
-                                        ?: return@setOnClickListener
+                                    val rawContent = getRawContent(message) ?: return@setOnClickListener
                                     if (isBlankSafe(rawContent)) return@setOnClickListener
-                                    translateAsync(message.id, rawContent, targetLang()) {
+                                    translateAsync(message.id, message.channelId, rawContent, targetLang()) {
                                         mainHandler.post {
                                             context?.let {
                                                 Toast.makeText(it, "Message Translated!", Toast.LENGTH_SHORT).show()
@@ -282,16 +267,22 @@ class TranslatePlugin : Plugin() {
                             }
 
                             binding.a.findViewById<TextView>(autoButtonId)?.setOnClickListener {
-                                if (message.channelId in autoChannels) {
-                                    autoChannels.remove(message.channelId)
-                                    context?.let {
-                                        Toast.makeText(it, "Auto-Translate OFF", Toast.LENGTH_SHORT).show()
-                                    }
+                                val currentChannelId = message.channelId
+                                if (currentChannelId in autoChannels) {
+                                    autoChannels.remove(currentChannelId)
+                                    
+                                    // 【自動翻訳OFF連動：表示リセット】
+                                    // 該当チャンネルに属するメッセージの表示フラグを一括で引き剥がし、再レンダリングをかける
+                                    translatedMessages.filterValues { it.channelId == currentChannelId }
+                                        .forEach { (id, entry) ->
+                                            entry.showingTranslation = false
+                                            rerenderMessage(id)
+                                        }
+
+                                    context?.let { Toast.makeText(it, "Auto-Translate OFF", Toast.LENGTH_SHORT).show() }
                                 } else {
-                                    autoChannels.add(message.channelId)
-                                    context?.let {
-                                        Toast.makeText(it, "Auto-Translate ON", Toast.LENGTH_SHORT).show()
-                                    }
+                                    autoChannels.add(currentChannelId)
+                                    context?.let { Toast.makeText(it, "Auto-Translate ON", Toast.LENGTH_SHORT).show() }
                                     rerenderMessage(message.id)
                                 }
                                 menu.dismiss()
@@ -313,8 +304,7 @@ class TranslatePlugin : Plugin() {
                     arrayOf(View::class.java, Bundle::class.java),
                     Hook { cf ->
                         try {
-                            val linearLayout = (cf.args[0] as? NestedScrollView)
-                                ?.getChildAt(0) as? LinearLayout ?: return@Hook
+                            val linearLayout = (cf.args[0] as? NestedScrollView)?.getChildAt(0) as? LinearLayout ?: return@Hook
                             val ctx2 = linearLayout.context
 
                             val messageId = try {
@@ -326,9 +316,7 @@ class TranslatePlugin : Plugin() {
                                 field?.get(cf.thisObject) as? Long
                             } catch (e: Throwable) {
                                 try {
-                                    WidgetChatListActions.`access$getMessageId$p`(
-                                        cf.thisObject as WidgetChatListActions
-                                    )
+                                    WidgetChatListActions.`access$getMessageId$p`(cf.thisObject as WidgetChatListActions)
                                 } catch (e2: Throwable) { null }
                             } ?: return@Hook
 
@@ -342,9 +330,7 @@ class TranslatePlugin : Plugin() {
                                 field?.get(cf.thisObject) as? Long
                             } catch (e: Throwable) {
                                 try {
-                                    WidgetChatListActions.`access$getChannelId$p`(
-                                        cf.thisObject as WidgetChatListActions
-                                    )
+                                    WidgetChatListActions.`access$getChannelId$p`(cf.thisObject as WidgetChatListActions)
                                 } catch (e2: Throwable) { 0L }
                             } ?: 0L
 
