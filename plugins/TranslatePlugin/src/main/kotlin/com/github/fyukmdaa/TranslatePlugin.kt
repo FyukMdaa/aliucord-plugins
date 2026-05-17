@@ -24,6 +24,7 @@ import com.lytefast.flexinput.R
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.util.regex.Pattern
 
 @AliucordPlugin
 class TranslatePlugin : Plugin() {
@@ -46,6 +47,9 @@ class TranslatePlugin : Plugin() {
     private var chatList: WidgetChatList? = null
     private var adapterField: Field? = null
     private var dataField: Field? = null
+
+    // Discordのカスタム絵文字、メンション、チャンネルタグなどを抽出する正規表現
+    private val discordTagPattern = Pattern.compile("<(?:a?:\\w+:\\d+|@&?\\d+|#\\d+|@!\\d+)>")
 
     private fun targetLang() = settings.getString("targetLang", "ja")
     private fun showOriginal() = settings.getBool("showOriginal", true)
@@ -74,7 +78,6 @@ class TranslatePlugin : Plugin() {
         }
         mainHandler.post {
             try {
-                // adapterを取得
                 if (adapterField == null) {
                     adapterField = WidgetChatList::class.java.declaredFields
                         .find { it.type.name.contains("WidgetChatListAdapter") }
@@ -85,7 +88,6 @@ class TranslatePlugin : Plugin() {
                     return@post
                 }
 
-                // データリストを取得
                 if (dataField == null) {
                     var clazz: Class<*>? = adapter.javaClass
                     while (clazz != null && dataField == null) {
@@ -112,7 +114,6 @@ class TranslatePlugin : Plugin() {
                     return@post
                 }
 
-                // notifyItemChanged をスーパークラスまで遡って探す
                 var notifyMethod: Method? = null
                 var currentClass: Class<*>? = adapter.javaClass
                 while (currentClass != null && notifyMethod == null) {
@@ -143,13 +144,47 @@ class TranslatePlugin : Plugin() {
         translatingIds.add(messageId)
         Thread {
             try {
-                val result = Translator.translate(content, lang)
+                // ── Discord特有タグの保護処理 ──
+                val tagsList = mutableListOf<String>()
+                val matcher = discordTagPattern.matcher(content)
+                val sb = StringBuffer()
+                
+                while (matcher.find()) {
+                    tagsList.add(matcher.group())
+                    // 翻訳エンジンに壊されないよう、__TAG_0__ のような形式に一時置換
+                    matcher.appendReplacement(sb, " __TAG_${tagsList.size - 1}__ ")
+                }
+                matcher.appendTail(sb)
+                val processedContent = sb.toString()
+
+                // 翻訳を実行
+                var result = Translator.translate(processedContent, lang)
+
                 if (result.isNotEmpty()) {
+                    // ── タグの復元処理 ──
+                    // 翻訳エンジンが前後に余計な空白を詰めることがあるため、前後のスペースの有無に対応できるように正規表現で戻す
+                    for (i in tagsList.indices) {
+                        val placeholderPattern = Pattern.compile("\\s*__TAG_${i}__\\s*")
+                        val tagMatcher = placeholderPattern.matcher(result)
+                        if (tagMatcher.find()) {
+                            result = tagMatcher.replaceAll(tagsList[i])
+                        }
+                    }
+
+                    // Unicodeエスケープ残滓のクリーンアップ（念のため）
+                    if (result.contains("\\u003c")) {
+                        result = result.replace("\\u003c", "<")
+                    }
+                    if (result.contains("\\u003e")) {
+                        result = result.replace("\\u003e", ">")
+                    }
+
                     translatedMessages[messageId] = TranslatedEntry(content, result)
                     onComplete?.invoke()
                     rerenderMessage(messageId)
                 }
             } catch (e: Exception) {
+                logger.error("Translation processing failed", e)
             } finally {
                 translatingIds.remove(messageId)
             }
@@ -182,7 +217,7 @@ class TranslatePlugin : Plugin() {
                 logger.error("Failed to patch WidgetChatList constructor", e)
             }
 
-            // ── 1a. Message.getContent フック → 全体翻訳のトリガーのみ ──
+            // ── 1a. Message.getContent フック ────────────────────────
             try {
                 patcher.patch(Message::class.java, "getContent", emptyArray(), Hook { cf ->
                     try {
@@ -199,7 +234,7 @@ class TranslatePlugin : Plugin() {
                 logger.error("Failed to patch Message.getContent", e)
             }
 
-            // ── 1b. processMessageText フック → 翻訳テキストを即時反映 ──
+            // ── 1b. processMessageText フック ────────────────────────
             try {
                 val mDraweeStringBuilder: Field = SimpleDraweeSpanTextView::class.java
                     .getDeclaredField("mDraweeStringBuilder")
@@ -213,10 +248,7 @@ class TranslatePlugin : Plugin() {
                         try {
                             val messageEntry = cf.args[1] as MessageEntry
                             val message = messageEntry.message ?: return@Hook
-                            val entry = translatedMessages[message.id]
-                            logger.info("processMessageText called: id=${message.id}, entry=$entry")
-                            
-                            entry ?: return@Hook
+                            val entry = translatedMessages[message.id] ?: return@Hook
                             if (!entry.showingTranslation) return@Hook
 
                             val textView = cf.args[0] as SimpleDraweeSpanTextView
@@ -238,7 +270,7 @@ class TranslatePlugin : Plugin() {
                 logger.error("Failed to patch processMessageText", e)
             }
 
-            // ── 2. configureUI フック → ボタンクリック処理 ───────────
+            // ── 2. configureUI フック ───────────────────────────────
             try {
                 val configureMethod = try {
                     messageContextMenu.getDeclaredMethod(
@@ -309,7 +341,7 @@ class TranslatePlugin : Plugin() {
                 logger.error("Failed to patch configureUI", e)
             }
 
-            // ── 3. onViewCreated フック → ボタンをメニューに追加 ─────
+            // ── 3. onViewCreated フック ─────────────────────────────
             try {
                 patcher.patch(
                     messageContextMenu,
