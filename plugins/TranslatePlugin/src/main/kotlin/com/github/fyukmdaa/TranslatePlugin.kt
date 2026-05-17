@@ -21,6 +21,10 @@ import com.lytefast.flexinput.R
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import com.discord.utilities.view.text.SimpleDraweeSpanTextView
+import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage
+import com.discord.widgets.chat.list.entries.MessageEntry
+import com.facebook.drawee.span.DraweeSpanStringBuilder
 
 @AliucordPlugin
 class TranslatePlugin : Plugin() {
@@ -180,31 +184,58 @@ class TranslatePlugin : Plugin() {
                 logger.error("Failed to patch WidgetChatList constructor", e)
             }
 
-            // ── 1. Message.getContent フック → 翻訳テキストを反映 ────
+            // ── 1a. Message.getContent フック → 全体翻訳のトリガーのみ ──
             try {
                 patcher.patch(Message::class.java, "getContent", emptyArray(), Hook { cf ->
                     try {
                         val message = cf.thisObject as Message
-                        val entry = translatedMessages[message.id]
-
-                        if (entry == null && message.channelId in autoChannels) {
+                        if (translatedMessages[message.id] == null && message.channelId in autoChannels) {
                             val rawContent = getRawContent(message)
                             if (!rawContent.isNullOrEmpty() && !isBlankSafe(rawContent)) {
                                 translateAsync(message.id, rawContent, targetLang())
                             }
                         }
-
-                        if (entry != null && entry.showingTranslation) {
-                            cf.result = if (showOriginal()) {
-                                "${entry.original}\n---\n${entry.translated}"
-                            } else {
-                                entry.translated
-                            }
-                        }
+                        // cf.result は書き換えない
                     } catch (e: Exception) { }
                 })
             } catch (e: Exception) {
                 logger.error("Failed to patch Message.getContent", e)
+            }
+
+            // ── 1b. processMessageText フック → 翻訳テキストを即時反映 ──
+            try {
+                val mDraweeStringBuilder: Field = SimpleDraweeSpanTextView::class.java
+                    .getDeclaredField("mDraweeStringBuilder")
+                    .apply { isAccessible = true }
+
+                patcher.patch(
+                    WidgetChatListAdapterItemMessage::class.java,
+                   "processMessageText",
+                    arrayOf(SimpleDraweeSpanTextView::class.java, MessageEntry::class.java),
+                    Hook { cf ->
+                        try {
+                            val messageEntry = cf.args[1] as MessageEntry
+                            val message = messageEntry.message ?: return@Hook
+                            val entry = translatedMessages[message.id] ?: return@Hook
+                            if (!entry.showingTranslation) return@Hook
+
+                            val textView = cf.args[0] as SimpleDraweeSpanTextView
+                            val builder = mDraweeStringBuilder[textView] as? DraweeSpanStringBuilder
+                                ?: return@Hook
+
+                            val display = if (showOriginal()) {
+                                "${entry.original}\n---\n${entry.translated}"
+                            } else {
+                                entry.translated
+                            }
+
+                            builder.replace(0, builder.length, display)
+                            textView.setDraweeSpanStringBuilder(builder)
+                        } catch (e: Exception) { }
+                    }
+                )
+            } catch (e: Exception) {
+                logger.error("Failed to patch processMessageText", e)
             }
 
             // ── 2. configureUI フック → ボタンクリック処理 ───────────
