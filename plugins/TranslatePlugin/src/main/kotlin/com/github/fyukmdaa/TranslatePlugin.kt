@@ -44,7 +44,6 @@ class TranslatePlugin : Plugin() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var chatList: WidgetChatList? = null
-    private var rerenderMethod: Method? = null
     private var adapterField: Field? = null
     private var dataField: Field? = null
 
@@ -70,76 +69,66 @@ class TranslatePlugin : Plugin() {
 
     private fun rerenderMessage(id: Long) {
         val list = chatList ?: run {
-            logger.warn("rerenderMessage: chatList is null!")  // ★ログ追加
+            logger.warn("rerenderMessage: chatList is null!")
             return
         }
         mainHandler.post {
             try {
-                if (rerenderMethod == null) {
+                // adapterを取得
+                if (adapterField == null) {
+                    adapterField = WidgetChatList::class.java.declaredFields
+                        .find { it.type.name.contains("WidgetChatListAdapter") }
+                    adapterField?.isAccessible = true
+                }
+                val adapter = adapterField?.get(list) ?: run {
+                    logger.warn("rerenderMessage: adapter is null")
+                    return@post
+                }
+
+                // データリストを取得
+                if (dataField == null) {
+                    var clazz: Class<*>? = adapter.javaClass
+                    while (clazz != null && dataField == null) {
+                        dataField = clazz.declaredFields.find {
+                            List::class.java.isAssignableFrom(it.type) &&
+                            !Modifier.isStatic(it.modifiers)
+                        }
+                        clazz = clazz.superclass
+                    }
+                    dataField?.isAccessible = true
+                }
+
+                val data = dataField?.get(adapter) as? List<*> ?: run {
+                    logger.warn("rerenderMessage: data is null")
+                    return@post
+                }
+
+                val index = data.indexOfFirst {
+                    (it as? MessageEntry)?.message?.id == id
+                }
+
+                if (index == -1) {
+                    logger.warn("rerenderMessage: message not found in list, id=$id")
+                    return@post
+                }
+
+                // notifyItemChanged をスーパークラスまで遡って探す
+                var notifyMethod: Method? = null
+                var currentClass: Class<*>? = adapter.javaClass
+                while (currentClass != null && notifyMethod == null) {
                     try {
-                        rerenderMethod = WidgetChatList::class.java.getDeclaredMethod(
-                            "rerenderMessage", Long::class.javaPrimitiveType
+                        notifyMethod = currentClass.getDeclaredMethod(
+                            "notifyItemChanged", Int::class.javaPrimitiveType
                         )
-                        rerenderMethod?.isAccessible = true
-                    } catch (e: Exception) {
-                        rerenderMethod = WidgetChatList::class.java.declaredMethods.find {
-                            it.parameterTypes.size == 1 &&
-                            it.parameterTypes[0] == Long::class.javaPrimitiveType &&
-                            it.returnType == Void.TYPE
-                        }
-                        rerenderMethod?.isAccessible = true
+                    } catch (ex: NoSuchMethodException) {
+                        currentClass = currentClass.superclass
                     }
                 }
-                val result = rerenderMethod?.invoke(list, id)
-                logger.info("rerenderMessage invoked: id=$id, method=$rerenderMethod")  // ★ログ追加
+                notifyMethod?.invoke(adapter, index)
+                logger.info("rerenderMessage: notifyItemChanged($index) called for id=$id")
+
             } catch (e: Exception) {
-                logger.error("rerenderMessage failed, attempting fallback notifyItemChanged", e)  // ★ログ追加
-                try {
-                    if (adapterField == null) {
-                        adapterField = WidgetChatList::class.java.declaredFields
-                            .find { it.type.name.contains("WidgetChatListAdapter") }
-                        adapterField?.isAccessible = true
-                    }
-                    val adapter = adapterField?.get(list) ?: return@post
-
-                    if (dataField == null) {
-                        var clazz: Class<*>? = adapter.javaClass
-                        while (clazz != null && dataField == null) {
-                            dataField = clazz.declaredFields.find {
-                                List::class.java.isAssignableFrom(it.type) &&
-                                !Modifier.isStatic(it.modifiers)
-                            }
-                            clazz = clazz.superclass
-                        }
-                        dataField?.isAccessible = true
-                    }
-
-                    val data = dataField?.get(adapter) as? List<*> ?: return@post
-                    val index = data.indexOfFirst {
-                        val entry = it as? MessageEntry
-                        entry?.message?.id == id
-                    }
-
-                    if (index != -1) {
-                        var notifyMethod: Method? = null
-                        var currentClass: Class<*>? = adapter.javaClass
-                        while (currentClass != null && notifyMethod == null) {
-                            try {
-                                notifyMethod = currentClass.getDeclaredMethod(
-                                    "notifyItemChanged", Int::class.javaPrimitiveType
-                                )
-                            } catch (ex: NoSuchMethodException) {
-                                currentClass = currentClass.superclass
-                            }
-                        }
-                        notifyMethod?.invoke(adapter, index)
-                        logger.info("Fallback notifyItemChanged invoked: id=$id, index=$index")
-                    } else {
-                        logger.warn("Fallback failed: message id=$id not found in adapter data")
-                    }
-                } catch (ex: Exception) {
-                    logger.error("Fallback rerender completely failed", ex)  // ★ログ追加
-                }
+                logger.error("rerenderMessage failed", e)
             }
         }
     }
@@ -225,7 +214,7 @@ class TranslatePlugin : Plugin() {
                             val messageEntry = cf.args[1] as MessageEntry
                             val message = messageEntry.message ?: return@Hook
                             val entry = translatedMessages[message.id]
-                            logger.info("processMessageText called: id=${message.id}, entry=$entry")  // ★ログ追加
+                            logger.info("processMessageText called: id=${message.id}, entry=$entry")
                             
                             entry ?: return@Hook
                             if (!entry.showingTranslation) return@Hook
